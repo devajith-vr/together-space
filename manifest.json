@@ -1,0 +1,17 @@
+{
+  "name": "Together Sync",
+  "short_name": "Together",
+  "description": "A private listen together platform for lovers.",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#12050B",
+  "theme_color": "#D81B60",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "./favicon.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
