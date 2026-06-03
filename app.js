@@ -1,20 +1,29 @@
+
+
 document.addEventListener('DOMContentLoaded', () => {
 
     let currentRoomCode = null;
     let currentUserName = null;
     let isCreator = false;
     let timerTickInterval = null;
+
+
     let mqttClient = null;
     let roomCryptoKey = null;
     let roomTopic = null;
     let lastPartnerActiveTime = 0;
     let isPartnerOnline = false;
+
     let plyrPlayer = null;
     let isIncomingSync = false;
+
+    // Initialize Plyr Media Player
     plyrPlayer = new Plyr('#mainVideo', {
         controls: ['play-large', 'play', 'progress', 'current-time', 'mute', 'volume', 'fullscreen'],
         seekTime: 10
     });
+
+    // UI Screen References
     const loginScreen = document.getElementById('loginScreen');
     const appScreen = document.getElementById('app');
     
@@ -28,6 +37,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const backBtns = document.querySelectorAll('.btn-back');
     const headerRoomBadge = document.getElementById('headerRoomBadge');
 
+    // Navigation triggers in login Overlay
     btnShowCreate.addEventListener('click', () => {
         loginStep1.classList.add('hidden');
         loginCreateForm.classList.remove('hidden');
@@ -46,7 +56,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
-    // Code Generator
+    // Helper: Alphanumeric Code Generator
     function generateRoomCode() {
         const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
         let code = '';
@@ -55,73 +65,85 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         return code;
     }
-    function arrayBufferToBase64(buffer) {
-        let binary = '';
-        const bytes = new Uint8Array(buffer);
-        const len = bytes.byteLength;
-        for (let i = 0; i < len; i++) {
-            binary += String.fromCharCode(bytes[i]);
+
+    // ========================================================
+    // --- Cryptography Helpers (RC4 E2E Encryption) ---
+    // ========================================================
+    function rc4EncryptDecrypt(key, str) {
+        const utf8Str = unescape(encodeURIComponent(str));
+        const s = [];
+        let j = 0;
+        let x;
+        let res = '';
+        
+        for (let i = 0; i < 256; i++) {
+            s[i] = i;
         }
-        return window.btoa(binary);
+        for (let i = 0; i < 256; i++) {
+            j = (j + s[i] + key.charCodeAt(i % key.length)) % 256;
+            x = s[i];
+            s[i] = s[j];
+            s[j] = x;
+        }
+        
+        let i = 0;
+        j = 0;
+        for (let y = 0; y < utf8Str.length; y++) {
+            i = (i + 1) % 256;
+            j = (j + s[i]) % 256;
+            x = s[i];
+            s[i] = s[j];
+            s[j] = x;
+            res += String.fromCharCode(utf8Str.charCodeAt(y) ^ s[(s[i] + s[j]) % 256]);
+        }
+        return window.btoa(res);
     }
 
-    function base64ToArrayBuffer(base64) {
-        const binary_string = window.atob(base64);
-        const len = binary_string.length;
-        const bytes = new Uint8Array(len);
-        for (let i = 0; i < len; i++) {
-            bytes[i] = binary_string.charCodeAt(i);
+    function rc4Decrypt(key, base64Str) {
+        try {
+            const binaryStr = window.atob(base64Str);
+            const s = [];
+            let j = 0;
+            let x;
+            let res = '';
+            
+            for (let i = 0; i < 256; i++) {
+                s[i] = i;
+            }
+            for (let i = 0; i < 256; i++) {
+                j = (j + s[i] + key.charCodeAt(i % key.length)) % 256;
+                x = s[i];
+                s[i] = s[j];
+                s[j] = x;
+            }
+            
+            let i = 0;
+            j = 0;
+            for (let y = 0; y < binaryStr.length; y++) {
+                i = (i + 1) % 256;
+                j = (j + s[i]) % 256;
+                x = s[i];
+                s[i] = s[j];
+                s[j] = x;
+                res += String.fromCharCode(binaryStr.charCodeAt(y) ^ s[(s[i] + s[j]) % 256]);
+            }
+            return decodeURIComponent(escape(res));
+        } catch (e) {
+            console.error("RC4 Decryption failed:", e);
+            return null;
         }
-        return bytes.buffer;
     }
 
     async function deriveE2EKey(roomCode) {
-        if (!window.isSecureContext || !crypto.subtle) {
-            console.warn("Crypto API is not available (insecure context or unsupported browser). Payload will not be encrypted.");
-            return null;
-        }
-        try {
-            const enc = new TextEncoder();
-            const keyMaterial = await crypto.subtle.importKey(
-                "raw",
-                enc.encode(roomCode),
-                { name: "PBKDF2" },
-                false,
-                ["deriveBits", "deriveKey"]
-            );
-            return await crypto.subtle.deriveKey(
-                {
-                    name: "PBKDF2",
-                    salt: enc.encode("together-sanctuary-salt-v1"),
-                    iterations: 1000,
-                    hash: "SHA-256"
-                },
-                keyMaterial,
-                { name: "AES-GCM", length: 256 },
-                true,
-                ["encrypt", "decrypt"]
-            );
-        } catch (e) {
-            console.error("Crypto Key Derivation failed:", e);
-            return null;
-        }
+        return roomCode;
     }
 
     async function encryptPayload(data, key) {
         const jsonStr = JSON.stringify(data);
         if (!key) return { encrypted: false, data: jsonStr };
         try {
-            const enc = new TextEncoder();
-            const iv = crypto.getRandomValues(new Uint8Array(12));
-            const ciphertext = await crypto.subtle.encrypt(
-                { name: "AES-GCM", iv: iv },
-                key,
-                enc.encode(jsonStr)
-            );
-            const combined = new Uint8Array(iv.length + ciphertext.byteLength);
-            combined.set(iv, 0);
-            combined.set(new Uint8Array(ciphertext), iv.length);
-            return { encrypted: true, data: arrayBufferToBase64(combined) };
+            const encryptedData = rc4EncryptDecrypt(key, jsonStr);
+            return { encrypted: true, data: encryptedData };
         } catch (e) {
             console.error("Encryption failed", e);
             return { encrypted: false, data: jsonStr };
@@ -137,16 +159,8 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }
         try {
-            const combined = new Uint8Array(base64ToArrayBuffer(payloadObj.data));
-            const iv = combined.slice(0, 12);
-            const ciphertext = combined.slice(12);
-            const decrypted = await crypto.subtle.decrypt(
-                { name: "AES-GCM", iv: iv },
-                key,
-                ciphertext
-            );
-            const dec = new TextDecoder();
-            return JSON.parse(dec.decode(decrypted));
+            const decryptedStr = rc4Decrypt(key, payloadObj.data);
+            return JSON.parse(decryptedStr);
         } catch (e) {
             console.error("Decryption failed. Room code mismatch or corrupt packet.", e);
             return null;
@@ -182,7 +196,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (err) console.error("MQTT subscription error:", err);
             });
             
-            // Broadcast 
+            // Broadcast our arrival
             broadcastSyncEvent('presence', {
                 action: 'join',
                 sender: yourName,
@@ -205,6 +219,8 @@ document.addEventListener('DOMContentLoaded', () => {
             
             handleIncomingSyncEvent(eventData);
         });
+
+        // Start local heartbeat pings
         setInterval(() => {
             if (mqttClient && mqttClient.connected) {
                 broadcastSyncEvent('presence', {
@@ -217,7 +233,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }, 3000);
 
-        // Check timeout 
+        // Check timeout presence
         setInterval(() => {
             if (lastPartnerActiveTime > 0) {
                 const elapsed = Date.now() - lastPartnerActiveTime;
@@ -347,6 +363,8 @@ document.addEventListener('DOMContentLoaded', () => {
             window.dispatchEvent(new CustomEvent('together_heart_triggered'));
         }
     }
+
+    // Dynamic presence tracking badge
     function startRoomPresenceSync(code, yourName) {
         const roomKey = `together_room_${code}`;
         const permissionKey = `together_share_permission_${code}`;
@@ -368,12 +386,15 @@ document.addEventListener('DOMContentLoaded', () => {
             const partner = roomData.partner;
             
             isCreator = (creator && yourName.toLowerCase() === creator.toLowerCase());
+
+            // 1. Creator Toggle Visibility Control
             if (isCreator) {
                 creatorToggleContainer.classList.remove('hidden');
             } else {
                 creatorToggleContainer.classList.add('hidden');
             }
 
+            // 2. Share Permission Control (Lock Dropzone for Partner)
             const btnChangeVideo = document.getElementById('btnChangeVideo');
             if (!isCreator) {
                 const shareAllowed = localStorage.getItem(permissionKey) !== 'false';
@@ -389,6 +410,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (btnChangeVideo) btnChangeVideo.classList.remove('hidden');
             }
 
+            // 3. Header badge presence display
             const headerUserBadge = document.getElementById('headerUserBadge');
             const badgeLoversNames = document.getElementById('badgeLoversNames');
             
@@ -396,7 +418,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (creator && partner) {
                     badgeLoversNames.textContent = `${creator} & ${partner}`;
                     
-                    // Track ConnectionTime
+                    // Track Connection Start Time
                     const startKey = `together_connection_start_${code}`;
                     let startTime = localStorage.getItem(startKey);
                     if (!startTime) {
@@ -440,28 +462,40 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    // Room Entrance Transition
     async function enterRoom(code, yourName, enteredAsCreator) {
         currentRoomCode = code;
         currentUserName = yourName;
         isCreator = enteredAsCreator;
         headerRoomBadge.textContent = `Room Code: ${code}`;
-    
+        
+        // Cache session details
         localStorage.setItem('together_session_code', code);
         localStorage.setItem('together_session_name', yourName);
         localStorage.setItem('together_session_is_creator', enteredAsCreator ? 'true' : 'false');
         
         roomCryptoKey = await deriveE2EKey(code);
         roomTopic = `together/rooms/${code}/events`;
-      
+        
+        // Initialize Real-time Connection
         connectToSyncBroker(code, yourName);
 
-     
+        // Start Presence badge sync loop
         startRoomPresenceSync(code, yourName);
+
+        // Start Chat list synchronization
         startChatSync(code);
+
+        // Start Shared Video Synchronization
         startVideoSync(code);
+
+        // Start Theme synchronization
         startThemeSync(code);
+
+        // Start Heart gesture synchronization
         startHeartSync(code);
 
+        // Start Leave Space functionality
         startLeaveSpaceAction(code);
 
         addNotification(`Connected! Welcome to the Sanctuary, ${yourName}.`);
@@ -473,7 +507,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }, 500);
     }
 
-    //session recovery
+    // Auto-login session recovery
     const savedCode = localStorage.getItem('together_session_code');
     const savedName = localStorage.getItem('together_session_name');
     const savedIsCreator = localStorage.getItem('together_session_is_creator') === 'true';
@@ -481,7 +515,7 @@ document.addEventListener('DOMContentLoaded', () => {
         enterRoom(savedCode, savedName, savedIsCreator);
     }
 
-    // Create Rooms
+    // Create Room Form Action
     document.getElementById('createRoomForm').addEventListener('submit', (e) => {
         e.preventDefault();
         const yourName = document.getElementById('createYourName').value.trim();
@@ -489,6 +523,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const newCode = generateRoomCode();
             document.getElementById('generatedCodeDisplay').textContent = newCode;
             
+            // Store Room State
             const roomKey = `together_room_${newCode}`;
             const permissionKey = `together_share_permission_${newCode}`;
             
