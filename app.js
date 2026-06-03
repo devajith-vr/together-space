@@ -21,6 +21,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const mainVideo = document.getElementById('mainVideo');
     let plyrPlayer = null;
     let isIncomingSync = false;
+    let ignorePlayEvents = 0;
+    let ignorePauseEvents = 0;
+    let ignoreSeekEvents = 0;
 
     // Safe Plyr / Native Video Initialization
     if (typeof Plyr !== 'undefined') {
@@ -31,17 +34,26 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // Wire Plyr Event Listeners for Live Broadcast
         plyrPlayer.on('play', () => {
-            if (isIncomingSync) return;
+            if (ignorePlayEvents > 0) {
+                ignorePlayEvents--;
+                return;
+            }
             broadcastVideoAction('play', plyrPlayer.currentTime);
         });
 
         plyrPlayer.on('pause', () => {
-            if (isIncomingSync) return;
+            if (ignorePauseEvents > 0) {
+                ignorePauseEvents--;
+                return;
+            }
             broadcastVideoAction('pause', plyrPlayer.currentTime);
         });
 
         plyrPlayer.on('seeked', () => {
-            if (isIncomingSync) return;
+            if (ignoreSeekEvents > 0) {
+                ignoreSeekEvents--;
+                return;
+            }
             broadcastVideoAction('seek', plyrPlayer.currentTime);
         });
     } else {
@@ -50,17 +62,26 @@ document.addEventListener('DOMContentLoaded', () => {
             mainVideo.controls = true; // Show native browser controls
 
             mainVideo.addEventListener('play', () => {
-                if (isIncomingSync) return;
+                if (ignorePlayEvents > 0) {
+                    ignorePlayEvents--;
+                    return;
+                }
                 broadcastVideoAction('play', mainVideo.currentTime);
             });
 
             mainVideo.addEventListener('pause', () => {
-                if (isIncomingSync) return;
+                if (ignorePauseEvents > 0) {
+                    ignorePauseEvents--;
+                    return;
+                }
                 broadcastVideoAction('pause', mainVideo.currentTime);
             });
 
             mainVideo.addEventListener('seeked', () => {
-                if (isIncomingSync) return;
+                if (ignoreSeekEvents > 0) {
+                    ignoreSeekEvents--;
+                    return;
+                }
                 broadcastVideoAction('seek', mainVideo.currentTime);
             });
         }
@@ -390,10 +411,10 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                 }
             } else if (event.action === 'leave') {
-                addNotification(`${event.sender} left the Sanctuary.`);
-                setPartnerOnline(false);
-                roomData.partner = null;
-                localStorage.setItem(roomKey, JSON.stringify(roomData));
+                addNotification(`${event.sender} left the Sanctuary. Returning to lobby...`);
+                setTimeout(() => {
+                    executeLeave();
+                }, 1000);
             }
         }
         
@@ -423,8 +444,12 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         
         else if (event.type === 'theme') {
-            localStorage.setItem(`together_theme_${code}`, event.themeName);
-            window.dispatchEvent(new CustomEvent('together_theme_updated', { detail: event }));
+            if (event.syncAction === 'permission_change') {
+                localStorage.setItem(`together_share_permission_${code}`, event.permissionState);
+            } else {
+                localStorage.setItem(`together_theme_${code}`, event.themeName);
+                window.dispatchEvent(new CustomEvent('together_theme_updated', { detail: event }));
+            }
         }
         
         else if (event.type === 'heart') {
@@ -458,6 +483,13 @@ document.addEventListener('DOMContentLoaded', () => {
             // 1. Creator Toggle Visibility Control
             if (isCreator) {
                 creatorToggleContainer.classList.remove('hidden');
+                const savedPermission = localStorage.getItem(permissionKey);
+                if (savedPermission !== null) {
+                    const creatorShareToggle = document.getElementById('creatorShareToggle');
+                    if (creatorShareToggle) {
+                        creatorShareToggle.checked = (savedPermission !== 'false');
+                    }
+                }
             } else {
                 creatorToggleContainer.classList.add('hidden');
             }
@@ -573,6 +605,54 @@ document.addEventListener('DOMContentLoaded', () => {
             loginScreen.style.display = 'none';
             appScreen.classList.remove('hidden');
         }, 500);
+    }
+
+    function executeLeave() {
+        const code = currentRoomCode;
+        if (!code) {
+            window.location.reload();
+            return;
+        }
+
+        const roomKey = `together_room_${code}`;
+        const startKey = `together_connection_start_${code}`;
+        
+        // Clear current session
+        localStorage.removeItem('together_session_code');
+        localStorage.removeItem('together_session_name');
+        localStorage.removeItem('together_session_is_creator');
+
+        let roomData = null;
+        try {
+            roomData = JSON.parse(localStorage.getItem(roomKey));
+        } catch(e) {}
+        
+        if (roomData) {
+            if (roomData.creator && roomData.creator.toLowerCase() === currentUserName.toLowerCase()) {
+                roomData.creator = null;
+            } else if (roomData.partner && roomData.partner.toLowerCase() === currentUserName.toLowerCase()) {
+                roomData.partner = null;
+            }
+            
+            if (!roomData.creator && !roomData.partner) {
+                localStorage.removeItem(roomKey);
+                localStorage.removeItem(startKey);
+                localStorage.removeItem(`together_timer_${code}`);
+                localStorage.removeItem(`together_video_${code}`);
+                localStorage.removeItem(`together_video_action_${code}`);
+                localStorage.removeItem(`together_share_permission_${code}`);
+                localStorage.removeItem(`together_theme_${code}`);
+                localStorage.removeItem(`together_chat_${code}`);
+            } else {
+                localStorage.setItem(roomKey, JSON.stringify(roomData));
+            }
+        }
+
+        if (mqttClient) {
+            mqttClient.end();
+        }
+        
+        window.location.reload();
     }
 
     // Auto-login session recovery
@@ -830,9 +910,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const btnChangeVideo = document.getElementById('btnChangeVideo');
 
     const CDN_PREVIEW_VIDEOS = [
-        "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4",
-        "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4",
-        "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4"
+        "https://vjs.zencdn.net/v/oceans.mp4",
+        "https://media.w3.org/2010/05/sintel/trailer_hd.mp4",
+        "https://photo-sphere-viewer-data.netlify.app/assets/equirectangular-video/Ayutthaya_HD.mp4"
     ];
 
     // Dropzone Click Select
@@ -901,8 +981,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const fileUrl = URL.createObjectURL(file);
         
-        isIncomingSync = true;
+        const theatreDropzoneWrapper = document.querySelector('.theatre-dropzone-wrapper');
+        if (theatreDropzoneWrapper) theatreDropzoneWrapper.classList.add('hidden');
+        
         if (plyrPlayer) {
+            ignorePlayEvents++;
             plyrPlayer.source = {
                 type: 'video',
                 sources: [
@@ -914,14 +997,12 @@ document.addEventListener('DOMContentLoaded', () => {
             };
             plyrPlayer.play().catch(err => console.log("Autoplay failed/blocked:", err));
         } else {
+            ignorePlayEvents++;
             mainVideo.src = fileUrl;
             mainVideo.play().catch(err => console.log("Autoplay failed/blocked:", err));
         }
         
-        videoDropzone.classList.add('hidden');
         videoPlayerWrapper.classList.remove('hidden');
-        
-        isIncomingSync = false;
         
         addNotification(`Shared video: ${file.name}`);
 
@@ -946,7 +1027,6 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     function unloadVideo() {
-        isIncomingSync = true;
         if (plyrPlayer) {
             plyrPlayer.pause();
             plyrPlayer.source = {}; // Reset source
@@ -955,9 +1035,12 @@ document.addEventListener('DOMContentLoaded', () => {
             mainVideo.src = "";
         }
         videoPlayerWrapper.classList.add('hidden');
+        
+        const theatreDropzoneWrapper = document.querySelector('.theatre-dropzone-wrapper');
+        if (theatreDropzoneWrapper) theatreDropzoneWrapper.classList.remove('hidden');
+        
         videoDropzone.classList.remove('hidden');
         videoFileInput.value = "";
-        isIncomingSync = false;
     }
 
     // Shared Video Sync (Sync play/pause/seeks and Takeover)
@@ -976,8 +1059,11 @@ document.addEventListener('DOMContentLoaded', () => {
         window.addEventListener('together_video_load', (e) => {
             const videoData = e.detail;
             
-            isIncomingSync = true;
+            const theatreDropzoneWrapper = document.querySelector('.theatre-dropzone-wrapper');
+            if (theatreDropzoneWrapper) theatreDropzoneWrapper.classList.add('hidden');
+            
             if (plyrPlayer) {
+                ignorePlayEvents++;
                 plyrPlayer.source = {
                     type: 'video',
                     sources: [
@@ -989,56 +1075,74 @@ document.addEventListener('DOMContentLoaded', () => {
                 };
                 plyrPlayer.play().catch(err => console.log("Autoplay failed/blocked:", err));
             } else {
+                ignorePlayEvents++;
                 mainVideo.src = videoData.videoUrl;
                 mainVideo.play().catch(err => console.log("Autoplay failed/blocked:", err));
             }
             
-            videoDropzone.classList.add('hidden');
             videoPlayerWrapper.classList.remove('hidden');
-            
-            // Brief timeout to let Plyr process source loading before clearing flag
-            setTimeout(() => {
-                isIncomingSync = false;
-            }, 200);
-
             addNotification(`${videoData.sender} shared: "${videoData.fileName}" (Syncing Preview)`);
         });
 
         window.addEventListener('together_video_action', (e) => {
             const actionData = e.detail;
             
-            isIncomingSync = true;
             if (actionData.action === 'play') {
                 if (plyrPlayer) {
-                    plyrPlayer.currentTime = actionData.time;
-                    plyrPlayer.play().catch(err => {});
+                    if (Math.abs(plyrPlayer.currentTime - actionData.time) > 1.5) {
+                        ignoreSeekEvents++;
+                        plyrPlayer.currentTime = actionData.time;
+                    }
+                    if (plyrPlayer.paused) {
+                        ignorePlayEvents++;
+                        plyrPlayer.play().catch(err => {});
+                    }
                 } else {
-                    mainVideo.currentTime = actionData.time;
-                    mainVideo.play().catch(err => {});
+                    if (Math.abs(mainVideo.currentTime - actionData.time) > 1.5) {
+                        ignoreSeekEvents++;
+                        mainVideo.currentTime = actionData.time;
+                    }
+                    if (mainVideo.paused) {
+                        ignorePlayEvents++;
+                        mainVideo.play().catch(err => {});
+                    }
                 }
             } else if (actionData.action === 'pause') {
                 if (plyrPlayer) {
-                    plyrPlayer.currentTime = actionData.time;
-                    plyrPlayer.pause();
+                    if (Math.abs(plyrPlayer.currentTime - actionData.time) > 1.5) {
+                        ignoreSeekEvents++;
+                        plyrPlayer.currentTime = actionData.time;
+                    }
+                    if (!plyrPlayer.paused) {
+                        ignorePauseEvents++;
+                        plyrPlayer.pause();
+                    }
                 } else {
-                    mainVideo.currentTime = actionData.time;
-                    mainVideo.pause();
+                    if (Math.abs(mainVideo.currentTime - actionData.time) > 1.5) {
+                        ignoreSeekEvents++;
+                        mainVideo.currentTime = actionData.time;
+                    }
+                    if (!mainVideo.paused) {
+                        ignorePauseEvents++;
+                        mainVideo.pause();
+                    }
                 }
             } else if (actionData.action === 'seek') {
                 if (plyrPlayer) {
-                    plyrPlayer.currentTime = actionData.time;
+                    if (Math.abs(plyrPlayer.currentTime - actionData.time) > 1.5) {
+                        ignoreSeekEvents++;
+                        plyrPlayer.currentTime = actionData.time;
+                    }
                 } else {
-                    mainVideo.currentTime = actionData.time;
+                    if (Math.abs(mainVideo.currentTime - actionData.time) > 1.5) {
+                        ignoreSeekEvents++;
+                        mainVideo.currentTime = actionData.time;
+                    }
                 }
             } else if (actionData.action === 'unload') {
                 unloadVideo();
                 addNotification(`${actionData.sender} removed the active video.`);
             }
-            
-            // Hold flag to prevent local feedback loops
-            setTimeout(() => {
-                isIncomingSync = false;
-            }, 200);
         });
     }
 
@@ -1205,7 +1309,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     leaveCountdownDisplay.textContent = countdown;
                     if (countdown <= 0) {
                         clearInterval(leaveInterval);
-                        executeLeave();
+                        triggerLeave();
                     }
                 }, 1000);
             });
@@ -1222,57 +1326,17 @@ document.addEventListener('DOMContentLoaded', () => {
         if (btnConfirmLeaveNow) {
             btnConfirmLeaveNow.addEventListener('click', () => {
                 if (leaveInterval) clearInterval(leaveInterval);
-                executeLeave();
+                triggerLeave();
             });
         }
 
-        function executeLeave() {
-            // Broadcast leave
+        function triggerLeave() {
             broadcastSyncEvent('presence', {
                 action: 'leave',
                 sender: currentUserName,
                 timestamp: Date.now()
             });
-
-            const roomKey = `together_room_${code}`;
-            const startKey = `together_connection_start_${code}`;
-            
-            // Clear current session
-            localStorage.removeItem('together_session_code');
-            localStorage.removeItem('together_session_name');
-            localStorage.removeItem('together_session_is_creator');
-
-            let roomData = null;
-            try {
-                roomData = JSON.parse(localStorage.getItem(roomKey));
-            } catch(e) {}
-            
-            if (roomData) {
-                if (roomData.creator && roomData.creator.toLowerCase() === currentUserName.toLowerCase()) {
-                    roomData.creator = null;
-                } else if (roomData.partner && roomData.partner.toLowerCase() === currentUserName.toLowerCase()) {
-                    roomData.partner = null;
-                }
-                
-                if (!roomData.creator && !roomData.partner) {
-                    localStorage.removeItem(roomKey);
-                    localStorage.removeItem(startKey);
-                    localStorage.removeItem(`together_timer_${code}`);
-                    localStorage.removeItem(`together_video_${code}`);
-                    localStorage.removeItem(`together_video_action_${code}`);
-                    localStorage.removeItem(`together_share_permission_${code}`);
-                    localStorage.removeItem(`together_theme_${code}`);
-                    localStorage.removeItem(`together_chat_${code}`);
-                } else {
-                    localStorage.setItem(roomKey, JSON.stringify(roomData));
-                }
-            }
-
-            if (mqttClient) {
-                mqttClient.end();
-            }
-            
-            window.location.reload();
+            executeLeave();
         }
     }
 
