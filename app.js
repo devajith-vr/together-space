@@ -347,6 +347,23 @@ document.addEventListener('DOMContentLoaded', () => {
                 roomData = JSON.parse(localStorage.getItem(roomKey)) || {};
             } catch(e) { roomData = {}; }
             
+            // Sync names dynamically on any presence event (join or ping)
+            let changed = false;
+            if (event.isCreator) {
+                if (roomData.creator !== event.sender) {
+                    roomData.creator = event.sender;
+                    changed = true;
+                }
+            } else {
+                if (roomData.partner !== event.sender) {
+                    roomData.partner = event.sender;
+                    changed = true;
+                }
+            }
+            if (changed) {
+                localStorage.setItem(roomKey, JSON.stringify(roomData));
+            }
+            
             if (event.action === 'join') {
                 addNotification(`${event.sender} entered Sanctuary!`);
                 if (isCreator) {
@@ -617,9 +634,9 @@ document.addEventListener('DOMContentLoaded', () => {
             const btn = document.querySelector('#joinRoomForm button[type="submit"]');
             if (btn) {
                 btn.disabled = true;
-                btn.textContent = "Verifying Room Code...";
+                btn.textContent = "Joining Room...";
             }
-            verifyRoomCodeAndJoin(code, name);
+            enterRoom(code, name, false);
         }
     });
 
