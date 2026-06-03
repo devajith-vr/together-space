@@ -194,7 +194,7 @@ input:focus, select:focus { border-color: var(--primary); background: rgba(216, 
 
 /* Player Wrapper & Plyr Adjustments */
 .player-wrapper { flex: 1; border-radius: 20px; overflow: hidden; background: #000; position: relative; border: 1px solid var(--glass-border); display: flex; }
-.player-wrapper video { width: 100%; height: 100%; object-fit: contain; }
+.player-wrapper video, .plyr__video-wrapper video { width: 100% !important; height: 100% !important; object-fit: cover !important; }
 
 .plyr {
     width: 100%;
