@@ -669,7 +669,6 @@ document.addEventListener('DOMContentLoaded', () => {
         const yourName = document.getElementById('createYourName').value.trim();
         if (yourName) {
             const newCode = generateRoomCode();
-            document.getElementById('generatedCodeDisplay').textContent = newCode;
             
             // Store Room State
             const roomKey = `together_room_${newCode}`;
@@ -689,20 +688,20 @@ document.addEventListener('DOMContentLoaded', () => {
             localStorage.setItem(roomKey, JSON.stringify(roomData));
             localStorage.setItem(permissionKey, 'true'); // Creator default allows sharing
             
-            // Pass values to start button
-            const startBtn = document.getElementById('btnEnterCreatedRoom');
-            startBtn.dataset.code = newCode;
-            startBtn.dataset.name = yourName;
-
-            loginCreateForm.classList.add('hidden');
-            loginRoomCreated.classList.remove('hidden');
+            // Enter room directly
+            enterRoom(newCode, yourName, true);
+            
+            // Auto copy to clipboard
+            if (navigator.clipboard) {
+                navigator.clipboard.writeText(newCode).then(() => {
+                    addNotification(`Room Created! Code ${newCode} copied to clipboard.`);
+                }).catch(() => {
+                    addNotification(`Room Created! Code: ${newCode}`);
+                });
+            } else {
+                addNotification(`Room Created! Code: ${newCode}`);
+            }
         }
-    });
-
-    document.getElementById('btnEnterCreatedRoom').addEventListener('click', (e) => {
-        const code = e.target.dataset.code;
-        const name = e.target.dataset.name;
-        enterRoom(code, name, true);
     });
 
     // Join Room Form Action
@@ -714,9 +713,9 @@ document.addEventListener('DOMContentLoaded', () => {
             const btn = document.querySelector('#joinRoomForm button[type="submit"]');
             if (btn) {
                 btn.disabled = true;
-                btn.textContent = "Joining Room...";
+                btn.textContent = "Verifying Room Code...";
             }
-            enterRoom(code, name, false);
+            verifyRoomCodeAndJoin(code, name);
         }
     });
 
@@ -973,6 +972,15 @@ document.addEventListener('DOMContentLoaded', () => {
         if(files.length > 0) loadLocalVideo(files[0], true);
     });
 
+    function getConsistentVideoUrl(fileName) {
+        let hash = 0;
+        for (let i = 0; i < fileName.length; i++) {
+            hash = fileName.charCodeAt(i) + ((hash << 5) - hash);
+        }
+        const index = Math.abs(hash) % CDN_PREVIEW_VIDEOS.length;
+        return CDN_PREVIEW_VIDEOS[index];
+    }
+
     function loadLocalVideo(file, triggerBroadcast = false) {
         if(!file.type.startsWith('video/')) {
             addNotification("Please select a valid video file!");
@@ -1007,7 +1015,7 @@ document.addEventListener('DOMContentLoaded', () => {
         addNotification(`Shared video: ${file.name}`);
 
         if (triggerBroadcast && currentRoomCode) {
-            const cdnUrl = CDN_PREVIEW_VIDEOS[Math.floor(Math.random() * CDN_PREVIEW_VIDEOS.length)];
+            const cdnUrl = getConsistentVideoUrl(file.name);
             
             // Broadcast load event
             broadcastSyncEvent('video_load', {
@@ -1034,6 +1042,11 @@ document.addEventListener('DOMContentLoaded', () => {
             mainVideo.pause();
             mainVideo.src = "";
         }
+        videoPlayerWrapper.classList.remove('rotated-landscape');
+        mainVideo.style.filter = '';
+        const videoBrightnessControl = document.getElementById('videoBrightnessControl');
+        if (videoBrightnessControl) videoBrightnessControl.value = 1.0;
+
         videoPlayerWrapper.classList.add('hidden');
         
         const theatreDropzoneWrapper = document.querySelector('.theatre-dropzone-wrapper');
@@ -1056,6 +1069,44 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function startVideoSync(code) {
+        // Brightness and Rotation handlers
+        const videoBrightnessControl = document.getElementById('videoBrightnessControl');
+        if (videoBrightnessControl) {
+            videoBrightnessControl.addEventListener('input', (e) => {
+                const val = e.target.value;
+                mainVideo.style.filter = `brightness(${val})`;
+            });
+        }
+
+        const btnRotateVideo = document.getElementById('btnRotateVideo');
+        if (btnRotateVideo) {
+            btnRotateVideo.addEventListener('click', (e) => {
+                e.stopPropagation();
+                videoPlayerWrapper.classList.toggle('rotated-landscape');
+                window.dispatchEvent(new Event('resize'));
+            });
+        }
+
+        // Fullscreen class wiring
+        if (plyrPlayer) {
+            plyrPlayer.on('enterfullscreen', () => {
+                document.body.classList.add('plyr-fullscreen-active');
+            });
+            plyrPlayer.on('exitfullscreen', () => {
+                document.body.classList.remove('plyr-fullscreen-active');
+                videoPlayerWrapper.classList.remove('rotated-landscape');
+            });
+        } else if (mainVideo) {
+            document.addEventListener('fullscreenchange', () => {
+                if (document.fullscreenElement) {
+                    document.body.classList.add('plyr-fullscreen-active');
+                } else {
+                    document.body.classList.remove('plyr-fullscreen-active');
+                    videoPlayerWrapper.classList.remove('rotated-landscape');
+                }
+            });
+        }
+
         window.addEventListener('together_video_load', (e) => {
             const videoData = e.detail;
             
@@ -1330,13 +1381,15 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         }
 
-        function triggerLeave() {
-            broadcastSyncEvent('presence', {
+        async function triggerLeave() {
+            await broadcastSyncEvent('presence', {
                 action: 'leave',
                 sender: currentUserName,
                 timestamp: Date.now()
             });
-            executeLeave();
+            setTimeout(() => {
+                executeLeave();
+            }, 300);
         }
     }
 
