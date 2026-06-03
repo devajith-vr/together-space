@@ -2,319 +2,248 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>Together — A Space for Two</title>
-    <link rel="icon" type="image/svg+xml" href="favicon.svg">
-    <link rel="manifest" href="manifest.json">
-    <meta name="theme-color" content="#0D0A14">
-    <meta name="mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Together - A Space for Two</title>
+    <link rel="icon" type="image/png" href="favicon.png">
+
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;1,300;1,400&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet">
-    <!-- PeerJS — enables real device-to-device connection via WebRTC -->
-    <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Playfair+Display:ital,wght@0,400;0,600;1,400;1,600&display=swap" rel="stylesheet">
+
+    <link rel="stylesheet" href="https://cdn.plyr.io/3.7.8/plyr.css" />
     <link rel="stylesheet" href="style.css">
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#c2185b">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 </head>
 <body>
 
-<!-- ── LOGIN OVERLAY ── -->
-<div id="loginScreen" class="login-overlay active">
-    <div class="login-ambient"></div>
-    <div class="login-particles" id="loginParticles"></div>
-
-    <div class="login-card" id="loginCard">
-        <div class="login-logo">
-            <div class="logo-orb">
-                <svg viewBox="0 0 40 40" fill="none">
-                    <path d="M20 34C20 34 6 26 6 16C6 11.6 9.6 8 14 8C16.4 8 18.6 9.2 20 11C21.4 9.2 23.6 8 26 8C30.4 8 34 11.6 34 16C34 26 20 34 20 34Z" fill="url(#hg)" stroke="rgba(255,120,160,0.4)" stroke-width="0.5"/>
-                    <defs>
-                        <linearGradient id="hg" x1="6" y1="8" x2="34" y2="34" gradientUnits="userSpaceOnUse">
-                            <stop offset="0%" stop-color="#FF6B9D"/>
-                            <stop offset="100%" stop-color="#C44569"/>
-                        </linearGradient>
-                    </defs>
-                </svg>
+    <!-- Modernized Room Setup Wizard Overlay -->
+    <div id="loginScreen" class="overlay-screen active">
+        <div class="background-glow"></div>
+        <div class="login-box panel">
+            <div class="logo justify-center mb-2">
+                <svg class="heart-icon-large pulse" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"></path></svg>
+                <h2 class="elegant-title" style="font-size:2.4rem; margin-top:10px; font-weight: 500;">Our Sanctuary</h2>
             </div>
-            <div>
-                <h1 class="login-title">Together</h1>
-                <p class="login-tagline">your private sanctuary</p>
+            <div class="e2e-badge-container mb-4" style="display: flex; justify-content: center;">
+                <span class="e2e-badge" style="display: inline-flex; align-items: center; gap: 6px; background: rgba(76, 175, 80, 0.1); border: 1px solid rgba(76, 175, 80, 0.15); padding: 5px 14px; border-radius: 20px; font-size: 0.72rem; color: #81C784; font-weight: 500; letter-spacing: 0.5px;">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width: 12px; height: 12px; color: #81C784; vertical-align: middle;"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+                    End-to-End Encrypted Sync
+                </span>
             </div>
-        </div>
-
-        <!-- Step 1: Choose -->
-        <div class="login-step active" id="step1">
-            <p class="step-desc">Create a secret room or join your partner's space — works on any device, anywhere 🌍</p>
-            <div class="btn-stack">
-                <button class="btn-primary" id="btnShowCreate">
-                    <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M10 4v12M4 10h12"/></svg>
-                    Create a New Room
-                </button>
-                <button class="btn-ghost" id="btnShowJoin">
-                    <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M13 10H3M10 6l4 4-4 4"/></svg>
-                    Join Existing Room
-                </button>
-            </div>
-            <p class="step-note">✦ Powered by peer-to-peer — no server, fully private</p>
-        </div>
-
-        <!-- Step 2: Create -->
-        <div class="login-step" id="stepCreate">
-            <p class="step-desc">What shall we call you?</p>
-            <form id="createRoomForm">
-                <div class="field-group">
-                    <label>Your Name</label>
-                    <input type="text" id="createYourName" placeholder="e.g. Juliet" autocomplete="off" required>
-                </div>
-                <button type="submit" class="btn-primary">
-                    <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M10 2l2.4 5 5.6.7-4 3.9.9 5.4L10 14.5l-4.9 2.5.9-5.4L2 7.7l5.6-.7L10 2z"/></svg>
-                    Generate Secret Code
-                </button>
-                <button type="button" class="btn-back" data-back="step1">← Back</button>
-            </form>
-        </div>
-
-        <!-- Step 3: Code Reveal -->
-        <div class="login-step" id="stepCode">
-            <p class="step-desc">Share this code with your partner 💌</p>
-            <div class="code-reveal">
-                <div class="code-glow-ring"></div>
-                <span id="generatedCodeDisplay">------</span>
-            </div>
-            <div class="code-steps">
-                <div class="code-step-item">
-                    <span class="cs-num">1</span>
-                    <span>You enter the room as the <strong>host</strong></span>
-                </div>
-                <div class="code-step-item">
-                    <span class="cs-num">2</span>
-                    <span>Partner opens this app on <strong>their device</strong></span>
-                </div>
-                <div class="code-step-item">
-                    <span class="cs-num">3</span>
-                    <span>Partner taps "Join" and enters this code</span>
-                </div>
-            </div>
-            <button class="btn-copy" id="btnCopyCode">
-                <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="7" y="7" width="11" height="11" rx="2"/><path d="M3 13V3h10"/></svg>
-                Copy Code
-            </button>
-            <button class="btn-primary" id="btnEnterCreatedRoom">Enter Room →</button>
-        </div>
-
-        <!-- Step 4: Join -->
-        <div class="login-step" id="stepJoin">
-            <p class="step-desc">Enter the details to join your partner</p>
-            <form id="joinRoomForm">
-                <div class="field-group">
-                    <label>Room Code</label>
-                    <input type="text" id="joinRoomCode" placeholder="e.g. A7X9F2" maxlength="6" autocomplete="off" required style="text-transform:uppercase;letter-spacing:0.2em;">
-                </div>
-                <div class="field-group">
-                    <label>Your Name</label>
-                    <input type="text" id="joinYourName" placeholder="e.g. Romeo" autocomplete="off" required>
-                </div>
-                <button type="submit" class="btn-primary">Connect to Partner →</button>
-                <button type="button" class="btn-back" data-back="step1">← Back</button>
-            </form>
-        </div>
-    </div>
-</div>
-
-<!-- ── MAIN APP ── -->
-<div id="app" class="hidden">
-
-    <!-- Header -->
-    <header class="app-header">
-        <div class="header-brand">
-            <div class="header-orb">
-                <svg viewBox="0 0 24 24" fill="url(#hg2)">
-                    <path d="M12 21C12 21 3 15.5 3 9.5C3 7 5 5 7.5 5C9 5 10.4 5.7 12 7.2C13.6 5.7 15 5 16.5 5C19 5 21 7 21 9.5C21 15.5 12 21 12 21Z"/>
-                    <defs><linearGradient id="hg2" x1="3" y1="5" x2="21" y2="21"><stop offset="0%" stop-color="#FF6B9D"/><stop offset="100%" stop-color="#C44569"/></linearGradient></defs>
-                </svg>
-            </div>
-            <span class="header-title">Together</span>
-        </div>
-
-        <div class="header-center">
-            <div class="room-pill" id="headerRoomBadge">Room: ------</div>
-        </div>
-
-        <div class="header-right">
-            <div class="peer-status-badge" id="peerStatusBadge">Connecting…</div>
-            <div class="presence-badge hidden" id="presenceBadge">
-                <div class="presence-dot"></div>
-                <span id="presenceNames">Waiting...</span>
-            </div>
-            <button class="btn-leave hidden" id="btnLeaveSpace">
-                <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M13 3h4v14h-4M9 14l4-4-4-4M13 10H3"/></svg>
-                Leave
-            </button>
-        </div>
-    </header>
-
-    <!-- Dashboard -->
-    <main class="app-grid">
-
-        <!-- LEFT: Theatre -->
-        <section class="theatre-panel">
-            <div class="panel-header">
-                <div class="panel-title">
-                    <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="16" height="12" rx="2"/><path d="M8 19h4M10 15v4"/></svg>
-                    <span>Gallery Theatre</span>
-                </div>
-                <div class="creator-toggle hidden" id="creatorToggleContainer">
-                    <span class="toggle-label">Partner can share</span>
-                    <label class="pill-toggle">
-                        <input type="checkbox" id="creatorShareToggle" checked>
-                        <span class="pill-track"></span>
-                    </label>
+            
+            <div id="loginStep1">
+                <p class="text-center mb-4 subtitle">Create a secret room or join an existing space with your partner.</p>
+                <div class="flex-col gap-3">
+                    <button class="btn primary w-full" id="btnShowCreate">Create a New Room</button>
+                    <button class="btn w-full" id="btnShowJoin">Join Existing Room</button>
                 </div>
             </div>
 
-            <div class="dropzone-wrap" style="position:relative;">
-                <div class="video-dropzone" id="videoDropzone">
-                    <div class="dropzone-inner">
-                        <div class="drop-icon-ring">
-                            <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="1.2">
-                                <circle cx="24" cy="24" r="22" stroke="rgba(255,107,157,0.3)"/>
-                                <path d="M24 14v12M24 26l-5-5M24 26l5-5" stroke="#FF6B9D"/>
-                                <path d="M14 32h20" stroke="rgba(255,107,157,0.5)"/>
-                            </svg>
-                        </div>
-                        <h4 class="drop-title">Drop a video here</h4>
-                        <p class="drop-sub">or pick one from your device</p>
-                        <button class="btn-pick" id="btnSelectVideo">Choose File</button>
-                        <input type="file" id="videoFileInput" accept="video/*" class="hidden">
+            <div id="loginCreateForm" class="hidden">
+                <p class="text-center mb-4 subtitle">Let's set up your private space.</p>
+                <form id="createRoomForm" class="flex-col gap-3">
+                    <div class="input-group">
+                        <label>Your Name</label>
+                        <input type="text" id="createYourName" placeholder="e.g. Juliet" required>
                     </div>
-                </div>
-                <div class="lock-overlay hidden" id="partnerLockOverlay">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="#FF6B9D" stroke-width="1.5"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-                    <h4>Sharing Locked</h4>
-                    <p>Your partner has restricted video sharing</p>
-                </div>
-            </div>
-
-            <!-- Video Player -->
-            <div class="player-wrap hidden" id="videoPlayerWrapper">
-                <video id="mainVideo" playsinline></video>
-                <div id="brightnessOverlay" class="brightness-layer"></div>
-
-                <div id="btnCenterPlayPause" class="center-btn hidden">
-                    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
-                </div>
-
-                <div id="btnUnlockOverlay" class="unlock-overlay hidden">
-                    <button id="btnUnlockControls" class="unlock-btn" title="Unlock">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-                        Tap to Unlock
-                    </button>
-                </div>
-
-                <div id="leftIndicator" class="swipe-indicator left hidden">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M2 12h2M20 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
-                    <div class="indicator-track"><div id="leftIndicatorFill" class="indicator-fill"></div></div>
-                    <span id="leftIndicatorText">100%</span>
-                </div>
-                <div id="rightIndicator" class="swipe-indicator right hidden">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>
-                    <div class="indicator-track"><div id="rightIndicatorFill" class="indicator-fill"></div></div>
-                    <span id="rightIndicatorText">100%</span>
-                </div>
-
-                <div id="seekIndicator" class="seek-banner hidden">
-                    <span id="seekIndicatorTime">0:00</span>
-                    <span id="seekIndicatorDiff"></span>
-                </div>
-
-                <div class="video-controls" id="customVideoControls">
-                    <input type="range" id="videoProgress" class="progress-slider" min="0" max="100" value="0" step="0.1">
-                    <div class="controls-row">
-                        <div class="ctrl-left">
-                            <button class="ctrl-btn" id="btnVideoPlayPause">
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-                            </button>
-                            <span class="time-label" id="videoTimeDisplay">0:00 / 0:00</span>
-                        </div>
-                        <div class="ctrl-right">
-                            <button class="ctrl-btn" id="btnLockControls" title="Lock Controls">
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-                            </button>
-                            <button class="ctrl-btn" id="btnVideoMute" title="Mute">
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 5L6 9H2v6h4l5 4V5z"/></svg>
-                            </button>
-                            <input type="range" id="videoVolume" class="volume-slider" min="0" max="1" value="1" step="0.05">
-                            <button class="ctrl-btn" id="btnVideoFullscreen" title="Fullscreen">
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
-                            </button>
-                            <button class="btn-change" id="btnChangeVideo">Change</button>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </section>
-
-        <!-- RIGHT: Sanctuary -->
-        <aside class="sanctuary-panel">
-
-            <div class="mood-picker">
-                <span class="mood-label">Mood</span>
-                <div class="mood-btns">
-                    <button class="mood-btn active" data-theme="rose">Rose</button>
-                    <button class="mood-btn" data-theme="midnight">Midnight</button>
-                    <button class="mood-btn" data-theme="ember">Ember</button>
-                    <button class="mood-btn" data-theme="ocean">Ocean</button>
-                </div>
-            </div>
-
-            <div class="chat-card">
-                <div class="chat-header">
-                    <div class="chat-status">
-                        <div class="status-dot" id="chatStatusDot"></div>
-                        <span id="chatPresenceIndicator">Waiting for partner...</span>
-                    </div>
-                    <span class="connection-time hidden" id="connectionBadgeTime"></span>
-                </div>
-
-                <div class="chat-scroll" id="chatScroller">
-                    <div class="chat-system">Your private space is ready ❤️</div>
-                </div>
-
-                <div class="quick-emojis">
-                    <button class="emoji-btn" data-emoji="❤️">❤️</button>
-                    <button class="emoji-btn" data-emoji="😘">😘</button>
-                    <button class="emoji-btn" data-emoji="🥺">🥺</button>
-                    <button class="emoji-btn" data-emoji="💕">💕</button>
-                    <button class="emoji-btn" data-emoji="✨">✨</button>
-                    <button class="emoji-btn" data-emoji="🌙">🌙</button>
-                </div>
-
-                <form class="chat-form" id="chatForm">
-                    <input type="text" id="chatInput" class="chat-input" placeholder="Waiting for partner..." disabled autocomplete="off">
-                    <button type="submit" class="send-btn hidden" id="btnSendChat">
-                        <svg viewBox="0 0 20 20" fill="currentColor"><path d="M2 10l16-8-6 8 6 8L2 10z"/></svg>
-                    </button>
+                    <button type="submit" class="btn primary mt-4 w-full">Generate Secret Room Code</button>
+                    <button type="button" class="btn btn-back mt-2 w-full text-muted">← Back</button>
                 </form>
             </div>
+            <div id="loginRoomCreated" class="hidden">
+                <h3 class="elegant-title text-center mb-2">Room Created!</h3>
+                <p class="text-center subtitle mb-4">Send this secret code to your partner so they can join you.</p>
+                <div class="generated-code-box mb-4">
+                    <h2 id="generatedCodeDisplay">------</h2>
+                </div>
+                <button id="btnEnterCreatedRoom" class="btn primary w-full">Enter Room Now</button>
+            </div>
+            <div id="loginJoinForm" class="hidden">
+                <p class="text-center mb-4 subtitle">Enter the code and details to join your partner's room.</p>
+                <form id="joinRoomForm" class="flex-col gap-3">
+                    <div class="input-group">
+                        <label>Room Code</label>
+                        <input type="text" id="joinRoomCode" placeholder="e.g. A7X9F2" required style="text-transform: uppercase;">
+                    </div>
+                    <div class="input-group">
+                        <label>Your Name</label>
+                        <input type="text" id="joinYourName" placeholder="e.g. Romeo" required>
+                    </div>
+                    <button type="submit" class="btn primary mt-4 w-full">Join Room</button>
+                    <button type="button" class="btn btn-back mt-2 w-full text-muted">← Back</button>
+                </form>
+            </div>
+        </div>
+    </div>
 
-            <div class="heart-gesture-area">
-                <button class="heart-btn" id="btnSendHeart" title="Send a heart ❤️">
-                    <svg viewBox="0 0 40 40" fill="none">
-                        <path d="M20 33C20 33 6 24.5 6 14.5C6 11 9 8 12.5 8C15 8 17.2 9.4 20 12.4C22.8 9.4 25 8 27.5 8C31 8 34 11 34 14.5C34 24.5 20 33 20 33Z" fill="url(#hbg)" stroke="rgba(255,107,157,0.3)" stroke-width="0.5"/>
-                        <defs><linearGradient id="hbg" x1="6" y1="8" x2="34" y2="33"><stop offset="0%" stop-color="#FF6B9D"/><stop offset="100%" stop-color="#C44569"/></linearGradient></defs>
-                    </svg>
-                    <span>Send Love</span>
+    <div id="app" class="hidden">
+  
+        <header class="main-header panel-blur">
+            <div class="header-logo">
+                <svg class="heart-icon pulse" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"></path></svg>
+                <h2 class="brand-title">Together</h2>
+                <span class="brand-subtitle">Our Private Sanctuary & Theatre</span>
+            </div>
+            <div class="room-code-badge" id="headerRoomBadge">Room Code: ------</div>
+            <div style="display: flex; align-items: center; gap: 15px;">
+                <div class="user-display-badge hidden" id="headerUserBadge" style="display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 6px 16px; border-radius: 16px;">
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                        <svg class="badge-heart" viewBox="0 0 24 24" fill="currentColor"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
+                        <span id="badgeLoversNames" style="font-weight: 600;">Waiting...</span>
+                    </div>
+                    <span id="connectionBadgeTime" class="connection-timestamp hidden" style="font-size: 0.65rem; color: var(--text-muted); font-weight: 300;"></span>
+                </div>
+                <button class="btn btn-sm hover-rose hidden" id="btnLeaveSpace" style="border: 1px solid rgba(216,27,96,0.3); background: rgba(216,27,96,0.05); color: var(--text-main); font-weight: 500; letter-spacing: 0.5px; border-radius: 16px; padding: 8px 16px; display: flex; align-items: center; gap: 6px;">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="icon-sm"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg>
+                    Leave
                 </button>
             </div>
+        </header>
 
-            <div class="notifications" id="notifications"></div>
-        </aside>
-    </main>
-</div>
+        <main class="dashboard-grid">
 
-<div id="floatingHearts" class="floating-hearts-container"></div>
+            <section class="theatre-container panel">
+                <div class="section-title-bar" style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.5" class="icon-sm"><rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18"></rect><line x1="7" y1="2" x2="7" y2="22"></line><line x1="17" y1="2" x2="17" y2="22"></line><line x1="2" y1="12" x2="22" y2="12"></line><line x1="2" y1="7" x2="7" y2="7"></line><line x1="2" y1="17" x2="7" y2="17"></line><line x1="17" y1="17" x2="22" y2="17"></line><line x1="17" y1="7" x2="22" y2="7"></line></svg>
+                        <h3 class="elegant-title">Gallery Theatre</h3>
+                    </div>
+                    <div class="creator-permission-toggle hidden" id="creatorToggleContainer" style="display: flex; align-items: center; gap: 8px;">
+                        <span class="subtitle" style="font-size: 0.8rem; letter-spacing: 0.5px; font-weight: 500;">Allow Partner to Share</span>
+                        <label class="switch">
+                            <input type="checkbox" id="creatorShareToggle" checked>
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
+                </div>
 
-<script src="app.js"></script>
+
+
+          
+                <div class="theatre-dropzone-wrapper" style="position: relative; flex: 1; display: flex; flex-direction: column;">
+           
+                    <div class="video-dropzone" id="videoDropzone">
+                        <div class="dropzone-content">
+                            <svg class="icon-large mb-4 pulse" viewBox="0 0 24 24" fill="none" stroke="var(--primary)" stroke-width="1.2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+                            <h4 class="elegant-title mb-2">Watch a Video from Gallery</h4>
+                            <p class="subtitle mb-4">Drag and drop any video here or click to select from your device gallery.</p>
+                            <button class="btn primary btn-sm" id="btnSelectVideo">Choose Local File</button>
+                            <input type="file" id="videoFileInput" accept="video/*" class="hidden">
+                        </div>
+                    </div>
+                    
+          
+                    <div id="partnerLockOverlay" class="partner-lock-overlay hidden">
+                        <div class="lock-content">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="var(--primary)" stroke-width="1.5" class="icon-large mb-4 pulse" style="color: var(--primary);"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+                            <h4 class="elegant-title mb-2" style="font-size: 1.4rem;">Sharing Locked</h4>
+                            <p class="subtitle text-center">Your partner has disabled sharing. Only the room creator can update the video right now.</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- HTML5 Custom Video Player with Plyr -->
+                <div class="player-wrapper hidden" id="videoPlayerWrapper" style="position: relative; overflow: hidden; border-radius: 20px;">
+                    <video id="mainVideo" playsinline></video>
+                    
+                    <!-- Floating Change Video Button -->
+                    <button class="btn btn-sm hover-rose" id="btnChangeVideo" style="position: absolute; top: 15px; right: 15px; z-index: 10; background: rgba(0,0,0,0.6); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); border: 1px solid var(--glass-border); border-radius: 20px; padding: 6px 16px; color: var(--text-main); font-weight: 500;">
+                        Change Video
+                    </button>
+                </div>
+            </section>
+
+            <!-- RIGHT COLUMN: THE LOVER'S CHAT AND SESSION TIMER -->
+            <section class="music-hub">
+                
+                <!-- LOVER'S CHAT DEDICATED CARD (Rebranded as Our Sanctuary) -->
+                <div class="chat-card panel flex-col" style="flex: 1; display: flex; flex-direction: column;">
+                    <div class="card-brand-header">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="var(--primary)" stroke-width="1.5" class="brand-svg-logo pulse"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"></path></svg>
+                        <div class="flex-1" style="display: flex; flex-direction: column;">
+                            <h4 class="elegant-title" style="font-size: 1.4rem;">Our Sanctuary</h4>
+                            <span class="status-indicator online" id="chatPresenceIndicator" style="font-size: 0.65rem; color: var(--accent);">Waiting for partner...</span>
+                        </div>
+                    </div>
+
+                    <!-- Ambient Backdrop Moods Selector Widget -->
+                    <div class="theme-selector-widget" style="background: rgba(255,255,255,0.03); border: 1px solid var(--glass-border); border-radius: 16px; padding: 10px 12px; margin-bottom: 12px; display: flex; flex-direction: column; gap: 6px;">
+                        <span class="subtitle" style="font-size: 0.75rem; font-weight: 500; color: var(--accent); letter-spacing: 0.5px; text-transform: uppercase; display: flex; align-items: center; gap: 4px;">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" class="icon-sm"><circle cx="12" cy="12" r="10"></circle><path d="M12 2v20M12 12H2"></path></svg>
+                            Ambient Backdrop Mood
+                        </span>
+                        <div style="display: flex; gap: 6px; flex-wrap: wrap; width: 100%;">
+                            <button type="button" class="btn btn-sm btn-theme active" data-theme="burgundy" style="padding: 4px 8px; font-size: 0.7rem; border-radius: 12px; flex: 1; min-width: 75px;">Burgundy</button>
+                            <button type="button" class="btn btn-sm btn-theme" data-theme="midnight" style="padding: 4px 8px; font-size: 0.7rem; border-radius: 12px; flex: 1; min-width: 75px;">Midnight</button>
+                            <button type="button" class="btn btn-sm btn-theme" data-theme="sunset" style="padding: 4px 8px; font-size: 0.7rem; border-radius: 12px; flex: 1; min-width: 75px;">Sunset</button>
+                            <button type="button" class="btn btn-sm btn-theme" data-theme="rosegold" style="padding: 4px 8px; font-size: 0.7rem; border-radius: 12px; flex: 1; min-width: 75px;">Rose Gold</button>
+                        </div>
+                    </div>
+
+                    <!-- Chat Message Stream Scroller -->
+                    <div class="chat-messages-container" style="flex: 1; min-height: 100px; background: rgba(0,0,0,0.2); border: 1px solid var(--glass-border); border-radius: 16px; margin-bottom: 10px; overflow: hidden; display: flex; flex-direction: column;">
+                        <div class="chat-scroller" id="chatScroller" style="flex: 1; padding: 12px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; scroll-behavior: smooth;">
+                            <div class="system-message" style="align-self: center; background: rgba(226, 149, 135, 0.08); padding: 6px 16px; border-radius: 20px; font-size: 0.75rem; color: var(--text-muted); border: 1px solid var(--glass-border);">Welcome to your private space. ❤️</div>
+                        </div>
+                    </div>
+
+                    <!-- Quick Emoji Shortcut Row -->
+                    <div class="quick-emojis-row" style="display: flex; gap: 10px; justify-content: center; margin-bottom: 8px;">
+                        <button type="button" class="quick-emoji-btn" style="background: none; border: none; font-size: 1.25rem; cursor: pointer; transition: transform 0.2s;">❤️</button>
+                        <button type="button" class="quick-emoji-btn" style="background: none; border: none; font-size: 1.25rem; cursor: pointer; transition: transform 0.2s;">✨</button>
+                        <button type="button" class="quick-emoji-btn" style="background: none; border: none; font-size: 1.25rem; cursor: pointer; transition: transform 0.2s;">🌸</button>
+                        <button type="button" class="quick-emoji-btn" style="background: none; border: none; font-size: 1.25rem; cursor: pointer; transition: transform 0.2s;">🥰</button>
+                        <button type="button" class="quick-emoji-btn" style="background: none; border: none; font-size: 1.25rem; cursor: pointer; transition: transform 0.2s;">🍿</button>
+                        <button type="button" class="quick-emoji-btn" style="background: none; border: none; font-size: 1.25rem; cursor: pointer; transition: transform 0.2s;">💋</button>
+                    </div>
+
+                    <!-- Chat Input Bar -->
+                    <form id="chatForm" class="chat-input-bar" style="display: flex; gap: 10px; align-items: center; width: 100%;">
+                        <input type="text" id="chatInput" placeholder="Send a sweet message..." autocomplete="off" style="flex: 1; height: 48px; border-radius: 24px; padding: 0 20px;">
+                        <button type="submit" class="btn primary primary-glow hidden" id="btnSendChat" title="Send Message" style="border-radius: 50%; width: 48px; height: 48px; min-width: 48px; padding: 0; display: flex; align-items: center; justify-content: center;">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="icon-sm" style="margin-left: 2px;"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+                        </button>
+                    </form>
+                </div>
+
+            </section>
+        </main>
+    </div>
+
+    <!-- Beautiful Fullscreen Glassmorphic Leave Overlay -->
+    <div id="leaveOverlay" class="leave-overlay hidden">
+        <div class="leave-glow"></div>
+        <div class="leave-box panel text-center flex-col gap-4" style="max-width: 460px; padding: 40px !important;">
+            <svg class="heart-icon-large pulse mb-2" viewBox="0 0 24 24" fill="currentColor" style="color: var(--primary);"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
+            <h2 class="elegant-title" style="font-size: 2rem;">Leaving Our Sanctuary</h2>
+            <p id="leaveTimeSummary" class="subtitle" style="font-size: 1rem; line-height: 1.6; margin: 15px 0;">You shared a beautiful moment together.</p>
+            
+            <div class="exit-countdown-container" style="margin-bottom: 10px;">
+                <span class="text-muted" style="font-size: 0.85rem;">Returning to lobby in</span>
+                <div id="leaveCountdownDisplay" style="font-size: 2.2rem; font-weight: bold; color: var(--accent); margin-top: 5px; text-shadow: 0 0 10px var(--primary-glow);">5</div>
+            </div>
+            
+            <div class="flex-col gap-2 w-full mt-4" style="display: flex; flex-direction: column;">
+                <button id="btnCancelLeave" class="btn primary w-full">Stay in Sanctuary</button>
+                <button id="btnConfirmLeaveNow" class="btn btn-back text-muted w-full" style="font-size: 0.85rem; margin-top: 8px;">Leave Immediately</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Real-time Cross-Device Synchronization Broker client -->
+    <script src="https://unpkg.com/mqtt@4.3.7/dist/mqtt.min.js"></script>
+    <!-- Plyr JS library for professional media playback -->
+    <script src="https://cdn.plyr.io/3.7.8/plyr.js"></script>
+    <script src="app.js"></script>
+    <script>
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('./sw.js').catch(err => console.log('SW registration skipped or failed:', err));
+            });
+        }
+    </script>
 </body>
 </html>
