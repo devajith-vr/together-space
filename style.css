@@ -194,7 +194,13 @@ input:focus, select:focus { border-color: var(--primary); background: rgba(216, 
 
 /* Player Wrapper & Plyr Adjustments */
 .player-wrapper { flex: 1; border-radius: 20px; overflow: hidden; background: #000; position: relative; border: 1px solid var(--glass-border); display: flex; }
-.player-wrapper video { width: 100% !important; height: 100% !important; object-fit: contain !important; }
+.player-wrapper video,
+.player-wrapper .plyr video,
+.player-wrapper .plyr__video-wrapper video {
+    width: 100% !important;
+    height: 100% !important;
+    object-fit: cover !important;
+}
 
 /* Force Plyr to take full height of its wrapper and fit layout */
 .player-wrapper .plyr {
@@ -215,96 +221,7 @@ input:focus, select:focus { border-color: var(--primary); background: rgba(216, 
     padding-bottom: 0 !important; /* Overrides default Plyr aspect-ratio padding */
 }
 
-/* Fullscreen Overlay Controls (Rotate & Brightness) */
-.fullscreen-overlay-controls {
-    display: none !important; /* Hidden by default in windowed mode */
-    position: absolute;
-    bottom: 80px; /* Position it above the Plyr controls bar */
-    left: 20px;
-    right: 20px;
-    justify-content: space-between;
-    align-items: center;
-    z-index: 99;
-    pointer-events: none;
-}
 
-/* Enable controls inside fullscreen or when rotated */
-:fullscreen .fullscreen-overlay-controls,
-:-webkit-full-screen .fullscreen-overlay-controls,
-.plyr--fullscreen-active .fullscreen-overlay-controls,
-.player-wrapper.rotated-landscape .fullscreen-overlay-controls {
-    display: flex !important;
-}
-
-.brightness-control-wrapper {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    background: rgba(0, 0, 0, 0.6);
-    backdrop-filter: blur(10px);
-    -webkit-backdrop-filter: blur(10px);
-    border: 1px solid var(--glass-border);
-    padding: 6px 12px;
-    border-radius: 20px;
-    pointer-events: auto;
-}
-
-.brightness-control-wrapper input[type=range] {
-    width: 100px;
-    height: 6px;
-    background: rgba(255, 255, 255, 0.2);
-    border-radius: 3px;
-    outline: none;
-    -webkit-appearance: none;
-    padding: 0;
-    border: none;
-}
-
-.brightness-control-wrapper input[type=range]::-webkit-slider-thumb {
-    -webkit-appearance: none;
-    width: 14px;
-    height: 14px;
-    border-radius: 50%;
-    background: var(--primary);
-    cursor: pointer;
-    box-shadow: 0 0 6px var(--primary-glow);
-}
-
-.brightness-icon {
-    font-size: 1rem;
-}
-
-.btn-rotate {
-    background: rgba(0, 0, 0, 0.6);
-    backdrop-filter: blur(10px);
-    -webkit-backdrop-filter: blur(10px);
-    border: 1px solid var(--glass-border);
-    color: var(--text-main);
-    border-radius: 20px;
-    padding: 6px 16px;
-    pointer-events: auto;
-    font-size: 0.8rem;
-    font-weight: 500;
-}
-.btn-rotate:hover {
-    background: rgba(216, 27, 96, 0.2);
-    border-color: var(--primary);
-}
-
-/* Rotated Landscape mode helper for mobiles */
-@media (max-width: 768px) {
-    .player-wrapper.rotated-landscape {
-        position: fixed !important;
-        top: 0 !important;
-        left: 0 !important;
-        width: 100vh !important;
-        height: 100vw !important;
-        transform: rotate(90deg) translate(0, -100vw) !important;
-        transform-origin: top left !important;
-        z-index: 999999 !important;
-        border-radius: 0 !important;
-    }
-}
 
 .plyr {
     width: 100%;
