@@ -1,17 +1,19 @@
 {
-  "name": "Together Sync",
+  "name": "Together — A Space for Two",
   "short_name": "Together",
-  "description": "A private listen together platform for lovers.",
+  "description": "A private sanctuary for two — chat, watch videos together, send love.",
   "start_url": "./index.html",
   "display": "standalone",
-  "background_color": "#12050B",
-  "theme_color": "#D81B60",
-  "orientation": "portrait",
+  "background_color": "#0D0A14",
+  "theme_color": "#0D0A14",
+  "orientation": "portrait-primary",
   "icons": [
     {
-      "src": "./favicon.png",
-      "sizes": "512x512",
-      "type": "image/png"
+      "src": "./favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
     }
   ]
 }
+
