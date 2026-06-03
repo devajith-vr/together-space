@@ -172,6 +172,20 @@
                     <button class="btn btn-sm hover-rose" id="btnChangeVideo" style="position: absolute; top: 15px; right: 15px; z-index: 10; background: rgba(0,0,0,0.6); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); border: 1px solid var(--glass-border); border-radius: 20px; padding: 6px 16px; color: var(--text-main); font-weight: 500;">
                         Change Video
                     </button>
+
+                    <!-- Fullscreen Overlay Controls (Rotate & Brightness) -->
+                    <div class="fullscreen-overlay-controls">
+                        <!-- Brightness control slider -->
+                        <div class="brightness-control-wrapper">
+                            <span class="brightness-icon">☀️</span>
+                            <input type="range" id="videoBrightnessControl" min="0.5" max="1.5" step="0.05" value="1.0" title="Adjust Brightness">
+                        </div>
+                        
+                        <!-- Rotate button (Mobile Fullscreen Only) -->
+                        <button class="btn btn-sm btn-rotate" id="btnRotateVideo" title="Rotate Video">
+                            🔄 Rotate
+                        </button>
+                    </div>
                 </div>
             </section>
 
