@@ -29,7 +29,11 @@ document.addEventListener('DOMContentLoaded', () => {
     if (typeof Plyr !== 'undefined') {
         plyrPlayer = new Plyr('#mainVideo', {
             controls: ['play-large', 'play', 'progress', 'current-time', 'mute', 'volume', 'fullscreen'],
-            seekTime: 10
+            seekTime: 10,
+            fullscreen: {
+                iosNative: false,
+                container: '#videoPlayerWrapper'
+            }
         });
 
         // Wire Plyr Event Listeners for Live Broadcast
@@ -234,14 +238,22 @@ document.addEventListener('DOMContentLoaded', () => {
     // ==========================================
     // --- Real-time MQTT Synchronization ---
     // ==========================================
-    async function broadcastSyncEvent(type, data) {
-        if (!mqttClient || !mqttClient.connected) return;
-        const fullPayload = {
-            type: type,
-            ...data
-        };
-        const encrypted = await encryptPayload(fullPayload, roomCryptoKey);
-        mqttClient.publish(roomTopic, JSON.stringify(encrypted), { qos: 1 });
+    function broadcastSyncEvent(type, data) {
+        return new Promise(async (resolve) => {
+            if (!mqttClient || !mqttClient.connected) {
+                resolve();
+                return;
+            }
+            const fullPayload = {
+                type: type,
+                ...data
+            };
+            const encrypted = await encryptPayload(fullPayload, roomCryptoKey);
+            mqttClient.publish(roomTopic, JSON.stringify(encrypted), { qos: 1 }, (err) => {
+                if (err) console.error("Publish error:", err);
+                resolve();
+            });
+        });
     }
 
     function connectToSyncBroker(code, yourName) {
@@ -317,7 +329,6 @@ document.addEventListener('DOMContentLoaded', () => {
         isPartnerOnline = online;
         
         const chatPresenceIndicator = document.getElementById('chatPresenceIndicator');
-        const btnLeaveSpace = document.getElementById('btnLeaveSpace');
         const btnSendChat = document.getElementById('btnSendChat');
         const chatInput = document.getElementById('chatInput');
         
@@ -326,7 +337,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 chatPresenceIndicator.textContent = "Partner Connected";
                 chatPresenceIndicator.style.color = "var(--accent)";
             }
-            if (btnLeaveSpace) btnLeaveSpace.classList.remove('hidden');
             if (btnSendChat) btnSendChat.classList.remove('hidden');
             if (chatInput) {
                 chatInput.disabled = false;
@@ -337,7 +347,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 chatPresenceIndicator.textContent = "Waiting for partner...";
                 chatPresenceIndicator.style.color = "var(--text-muted)";
             }
-            if (btnLeaveSpace) btnLeaveSpace.classList.add('hidden');
             if (btnSendChat) btnSendChat.classList.add('hidden');
             if (chatInput) {
                 chatInput.disabled = true;
@@ -352,11 +361,27 @@ document.addEventListener('DOMContentLoaded', () => {
         const permissionKey = `together_share_permission_${code}`;
         
         if (event.type === 'verify_request') {
-            // Reply back to verify requester that we are online!
-            broadcastSyncEvent('verify_response', {
-                sender: currentUserName,
-                timestamp: Date.now()
-            });
+            let roomData = null;
+            try {
+                roomData = JSON.parse(localStorage.getItem(roomKey)) || {};
+            } catch(e) { roomData = {}; }
+
+            // Restrict to maximum 2 people
+            const isFull = roomData.creator && roomData.partner;
+            
+            if (isFull) {
+                broadcastSyncEvent('verify_response', {
+                    sender: currentUserName,
+                    status: 'full',
+                    timestamp: Date.now()
+                });
+            } else {
+                broadcastSyncEvent('verify_response', {
+                    sender: currentUserName,
+                    status: 'available',
+                    timestamp: Date.now()
+                });
+            }
         }
         
         else if (event.type === 'presence') {
@@ -411,6 +436,11 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                 }
             } else if (event.action === 'leave') {
+                // Clear session immediately so that if the user closes the tab right now, they won't auto-login next time
+                localStorage.removeItem('together_session_code');
+                localStorage.removeItem('together_session_name');
+                localStorage.removeItem('together_session_is_creator');
+                
                 addNotification(`${event.sender} left the Sanctuary. Returning to lobby...`);
                 setTimeout(() => {
                     executeLeave();
@@ -598,6 +628,10 @@ document.addEventListener('DOMContentLoaded', () => {
         // Start Leave Space functionality
         startLeaveSpaceAction(code);
 
+        // Ensure leave button is permanently visible inside the room
+        const btnLeaveSpace = document.getElementById('btnLeaveSpace');
+        if (btnLeaveSpace) btnLeaveSpace.classList.remove('hidden');
+
         addNotification(`Connected! Welcome to the Sanctuary, ${yourName}.`);
         
         loginScreen.classList.remove('active');
@@ -608,48 +642,48 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function executeLeave() {
-        const code = currentRoomCode;
-        if (!code) {
-            window.location.reload();
-            return;
-        }
-
-        const roomKey = `together_room_${code}`;
-        const startKey = `together_connection_start_${code}`;
-        
-        // Clear current session
+        // Clear current session immediately
         localStorage.removeItem('together_session_code');
         localStorage.removeItem('together_session_name');
         localStorage.removeItem('together_session_is_creator');
 
-        let roomData = null;
-        try {
-            roomData = JSON.parse(localStorage.getItem(roomKey));
-        } catch(e) {}
-        
-        if (roomData) {
-            if (roomData.creator && roomData.creator.toLowerCase() === currentUserName.toLowerCase()) {
-                roomData.creator = null;
-            } else if (roomData.partner && roomData.partner.toLowerCase() === currentUserName.toLowerCase()) {
-                roomData.partner = null;
-            }
+        const code = currentRoomCode;
+        if (code) {
+            const roomKey = `together_room_${code}`;
+            const startKey = `together_connection_start_${code}`;
+
+            let roomData = null;
+            try {
+                roomData = JSON.parse(localStorage.getItem(roomKey));
+            } catch(e) {}
             
-            if (!roomData.creator && !roomData.partner) {
-                localStorage.removeItem(roomKey);
-                localStorage.removeItem(startKey);
-                localStorage.removeItem(`together_timer_${code}`);
-                localStorage.removeItem(`together_video_${code}`);
-                localStorage.removeItem(`together_video_action_${code}`);
-                localStorage.removeItem(`together_share_permission_${code}`);
-                localStorage.removeItem(`together_theme_${code}`);
-                localStorage.removeItem(`together_chat_${code}`);
-            } else {
-                localStorage.setItem(roomKey, JSON.stringify(roomData));
+            if (roomData && currentUserName) {
+                const lowerUser = currentUserName.toLowerCase();
+                if (roomData.creator && roomData.creator.toLowerCase() === lowerUser) {
+                    roomData.creator = null;
+                } else if (roomData.partner && roomData.partner.toLowerCase() === lowerUser) {
+                    roomData.partner = null;
+                }
+                
+                if (!roomData.creator && !roomData.partner) {
+                    localStorage.removeItem(roomKey);
+                    localStorage.removeItem(startKey);
+                    localStorage.removeItem(`together_timer_${code}`);
+                    localStorage.removeItem(`together_video_${code}`);
+                    localStorage.removeItem(`together_video_action_${code}`);
+                    localStorage.removeItem(`together_share_permission_${code}`);
+                    localStorage.removeItem(`together_theme_${code}`);
+                    localStorage.removeItem(`together_chat_${code}`);
+                } else {
+                    localStorage.setItem(roomKey, JSON.stringify(roomData));
+                }
             }
         }
 
         if (mqttClient) {
-            mqttClient.end();
+            try {
+                mqttClient.end();
+            } catch (e) {}
         }
         
         window.location.reload();
@@ -763,21 +797,33 @@ document.addEventListener('DOMContentLoaded', () => {
 
             const eventData = await decryptPayload(payloadObj, key);
             if (eventData && eventData.type === 'verify_response') {
-                verified = true;
-                clearTimeout(timeoutId);
-                tempClient.end();
-                
-                // Save partner details locally
-                const roomKey = `together_room_${code}`;
-                let roomData = null;
-                try {
-                    roomData = JSON.parse(localStorage.getItem(roomKey)) || {};
-                } catch(e) { roomData = {}; }
-                roomData.partner = name;
-                roomData.creator = eventData.sender; // Save creator name
-                localStorage.setItem(roomKey, JSON.stringify(roomData));
+                if (eventData.status === 'full') {
+                    // Room is full
+                    clearTimeout(timeoutId);
+                    tempClient.end();
+                    addNotification("This private space is already full (max 2 people)!");
+                    const btn = document.querySelector('#joinRoomForm button[type="submit"]');
+                    if (btn) {
+                        btn.disabled = false;
+                        btn.textContent = "Join Room";
+                    }
+                } else {
+                    verified = true;
+                    clearTimeout(timeoutId);
+                    tempClient.end();
+                    
+                    // Save partner details locally
+                    const roomKey = `together_room_${code}`;
+                    let roomData = null;
+                    try {
+                        roomData = JSON.parse(localStorage.getItem(roomKey)) || {};
+                    } catch(e) { roomData = {}; }
+                    roomData.partner = name;
+                    roomData.creator = eventData.sender; // Save creator name
+                    localStorage.setItem(roomKey, JSON.stringify(roomData));
 
-                enterRoom(code, name, false);
+                    enterRoom(code, name, false);
+                }
             }
         });
     }
@@ -987,7 +1033,7 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
-        const fileUrl = URL.createObjectURL(file);
+        const cdnUrl = getConsistentVideoUrl(file.name);
         
         const theatreDropzoneWrapper = document.querySelector('.theatre-dropzone-wrapper');
         if (theatreDropzoneWrapper) theatreDropzoneWrapper.classList.add('hidden');
@@ -998,15 +1044,15 @@ document.addEventListener('DOMContentLoaded', () => {
                 type: 'video',
                 sources: [
                     {
-                        src: fileUrl,
-                        type: file.type
+                        src: cdnUrl,
+                        type: 'video/mp4'
                     }
                 ]
             };
             plyrPlayer.play().catch(err => console.log("Autoplay failed/blocked:", err));
         } else {
             ignorePlayEvents++;
-            mainVideo.src = fileUrl;
+            mainVideo.src = cdnUrl;
             mainVideo.play().catch(err => console.log("Autoplay failed/blocked:", err));
         }
         
@@ -1015,8 +1061,6 @@ document.addEventListener('DOMContentLoaded', () => {
         addNotification(`Shared video: ${file.name}`);
 
         if (triggerBroadcast && currentRoomCode) {
-            const cdnUrl = getConsistentVideoUrl(file.name);
-            
             // Broadcast load event
             broadcastSyncEvent('video_load', {
                 fileName: file.name,
@@ -1382,14 +1426,33 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         async function triggerLeave() {
+            // Clear session immediately so closing the tab now is safe
+            localStorage.removeItem('together_session_code');
+            localStorage.removeItem('together_session_name');
+            localStorage.removeItem('together_session_is_creator');
+
             await broadcastSyncEvent('presence', {
                 action: 'leave',
                 sender: currentUserName,
                 timestamp: Date.now()
             });
-            setTimeout(() => {
+            
+            if (mqttClient) {
+                let ended = false;
+                const done = () => {
+                    if (ended) return;
+                    ended = true;
+                    executeLeave();
+                };
+                setTimeout(done, 400); // safety fallback
+                try {
+                    mqttClient.end(false, done);
+                } catch (e) {
+                    done();
+                }
+            } else {
                 executeLeave();
-            }, 300);
+            }
         }
     }
 
