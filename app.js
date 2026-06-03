@@ -9,6 +9,7 @@ document.addEventListener('DOMContentLoaded', () => {
     let currentUserName = null;
     let isCreator = false;
     let timerTickInterval = null;
+    let currentLoadedFileName = null;
 
     // Real-time Sync State
     let mqttClient = null;
@@ -441,7 +442,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 localStorage.removeItem('together_session_name');
                 localStorage.removeItem('together_session_is_creator');
                 
-                addNotification(`${event.sender} left the Sanctuary. Returning to lobby...`);
+                // Hide leave button immediately so B knows the room is closed
+                const btnLeaveSpace = document.getElementById('btnLeaveSpace');
+                if (btnLeaveSpace) btnLeaveSpace.classList.add('hidden');
+                
+                addNotification(`${event.sender || 'Partner'} left the Sanctuary. Returning to lobby...`);
                 setTimeout(() => {
                     executeLeave();
                 }, 1000);
@@ -680,12 +685,55 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }
 
-        if (mqttClient) {
+        currentRoomCode = null;
+        currentUserName = null;
+        isCreator = false;
+        currentLoadedFileName = null;
+        
+        if (plyrPlayer) {
             try {
-                mqttClient.end();
+                plyrPlayer.pause();
+                plyrPlayer.source = {};
+            } catch (e) {}
+        } else if (mainVideo) {
+            try {
+                mainVideo.pause();
+                mainVideo.src = "";
             } catch (e) {}
         }
+
+        if (mqttClient) {
+            try {
+                mqttClient.end(true);
+            } catch (e) {}
+            mqttClient = null;
+        }
+
+        // Hide app and show lobby immediately in DOM
+        const appScreen = document.getElementById('app');
+        const loginScreen = document.getElementById('loginScreen');
+        const loginStep1 = document.getElementById('loginStep1');
+        const loginCreateForm = document.getElementById('loginCreateForm');
+        const loginJoinForm = document.getElementById('loginJoinForm');
         
+        if (appScreen) appScreen.classList.add('hidden');
+        if (loginScreen) {
+            loginScreen.style.display = 'flex';
+            loginScreen.classList.add('active');
+        }
+        if (loginStep1) loginStep1.classList.remove('hidden');
+        if (loginCreateForm) loginCreateForm.classList.add('hidden');
+        if (loginJoinForm) loginJoinForm.classList.add('hidden');
+        
+        const btnLeaveSpace = document.getElementById('btnLeaveSpace');
+        if (btnLeaveSpace) btnLeaveSpace.classList.add('hidden');
+
+        const leaveOverlay = document.getElementById('leaveOverlay');
+        if (leaveOverlay) {
+            leaveOverlay.classList.remove('active');
+            leaveOverlay.classList.add('hidden');
+        }
+
         window.location.reload();
     }
 
@@ -954,11 +1002,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const videoPlayerWrapper = document.getElementById('videoPlayerWrapper');
     const btnChangeVideo = document.getElementById('btnChangeVideo');
 
-    const CDN_PREVIEW_VIDEOS = [
-        "https://vjs.zencdn.net/v/oceans.mp4",
-        "https://media.w3.org/2010/05/sintel/trailer_hd.mp4",
-        "https://photo-sphere-viewer-data.netlify.app/assets/equirectangular-video/Ayutthaya_HD.mp4"
-    ];
+
 
     // Dropzone Click Select
     videoDropzone.addEventListener('click', () => {
@@ -1018,22 +1062,14 @@ document.addEventListener('DOMContentLoaded', () => {
         if(files.length > 0) loadLocalVideo(files[0], true);
     });
 
-    function getConsistentVideoUrl(fileName) {
-        let hash = 0;
-        for (let i = 0; i < fileName.length; i++) {
-            hash = fileName.charCodeAt(i) + ((hash << 5) - hash);
-        }
-        const index = Math.abs(hash) % CDN_PREVIEW_VIDEOS.length;
-        return CDN_PREVIEW_VIDEOS[index];
-    }
-
     function loadLocalVideo(file, triggerBroadcast = false) {
         if(!file.type.startsWith('video/')) {
             addNotification("Please select a valid video file!");
             return;
         }
 
-        const cdnUrl = getConsistentVideoUrl(file.name);
+        const fileUrl = URL.createObjectURL(file);
+        currentLoadedFileName = file.name;
         
         const theatreDropzoneWrapper = document.querySelector('.theatre-dropzone-wrapper');
         if (theatreDropzoneWrapper) theatreDropzoneWrapper.classList.add('hidden');
@@ -1044,15 +1080,15 @@ document.addEventListener('DOMContentLoaded', () => {
                 type: 'video',
                 sources: [
                     {
-                        src: cdnUrl,
-                        type: 'video/mp4'
+                        src: fileUrl,
+                        type: file.type
                     }
                 ]
             };
             plyrPlayer.play().catch(err => console.log("Autoplay failed/blocked:", err));
         } else {
             ignorePlayEvents++;
-            mainVideo.src = cdnUrl;
+            mainVideo.src = fileUrl;
             mainVideo.play().catch(err => console.log("Autoplay failed/blocked:", err));
         }
         
@@ -1064,7 +1100,6 @@ document.addEventListener('DOMContentLoaded', () => {
             // Broadcast load event
             broadcastSyncEvent('video_load', {
                 fileName: file.name,
-                videoUrl: cdnUrl,
                 sender: currentUserName,
                 timestamp: Date.now()
             });
@@ -1086,15 +1121,17 @@ document.addEventListener('DOMContentLoaded', () => {
             mainVideo.pause();
             mainVideo.src = "";
         }
-        videoPlayerWrapper.classList.remove('rotated-landscape');
-        mainVideo.style.filter = '';
-        const videoBrightnessControl = document.getElementById('videoBrightnessControl');
-        if (videoBrightnessControl) videoBrightnessControl.value = 1.0;
+        currentLoadedFileName = null;
 
         videoPlayerWrapper.classList.add('hidden');
         
         const theatreDropzoneWrapper = document.querySelector('.theatre-dropzone-wrapper');
         if (theatreDropzoneWrapper) theatreDropzoneWrapper.classList.remove('hidden');
+        
+        const dropzonePromptText = document.getElementById('dropzonePromptText');
+        if (dropzonePromptText) {
+            dropzonePromptText.textContent = "Drag and drop any video here or click to select from your device gallery.";
+        }
         
         videoDropzone.classList.remove('hidden');
         videoFileInput.value = "";
@@ -1113,24 +1150,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function startVideoSync(code) {
-        // Brightness and Rotation handlers
-        const videoBrightnessControl = document.getElementById('videoBrightnessControl');
-        if (videoBrightnessControl) {
-            videoBrightnessControl.addEventListener('input', (e) => {
-                const val = e.target.value;
-                mainVideo.style.filter = `brightness(${val})`;
-            });
-        }
-
-        const btnRotateVideo = document.getElementById('btnRotateVideo');
-        if (btnRotateVideo) {
-            btnRotateVideo.addEventListener('click', (e) => {
-                e.stopPropagation();
-                videoPlayerWrapper.classList.toggle('rotated-landscape');
-                window.dispatchEvent(new Event('resize'));
-            });
-        }
-
         // Fullscreen class wiring
         if (plyrPlayer) {
             plyrPlayer.on('enterfullscreen', () => {
@@ -1138,7 +1157,6 @@ document.addEventListener('DOMContentLoaded', () => {
             });
             plyrPlayer.on('exitfullscreen', () => {
                 document.body.classList.remove('plyr-fullscreen-active');
-                videoPlayerWrapper.classList.remove('rotated-landscape');
             });
         } else if (mainVideo) {
             document.addEventListener('fullscreenchange', () => {
@@ -1146,7 +1164,6 @@ document.addEventListener('DOMContentLoaded', () => {
                     document.body.classList.add('plyr-fullscreen-active');
                 } else {
                     document.body.classList.remove('plyr-fullscreen-active');
-                    videoPlayerWrapper.classList.remove('rotated-landscape');
                 }
             });
         }
@@ -1154,29 +1171,21 @@ document.addEventListener('DOMContentLoaded', () => {
         window.addEventListener('together_video_load', (e) => {
             const videoData = e.detail;
             
-            const theatreDropzoneWrapper = document.querySelector('.theatre-dropzone-wrapper');
-            if (theatreDropzoneWrapper) theatreDropzoneWrapper.classList.add('hidden');
+            if (currentLoadedFileName === videoData.fileName) {
+                const theatreDropzoneWrapper = document.querySelector('.theatre-dropzone-wrapper');
+                if (theatreDropzoneWrapper) theatreDropzoneWrapper.classList.add('hidden');
+                videoPlayerWrapper.classList.remove('hidden');
+                return;
+            }
+
+            unloadVideo();
             
-            if (plyrPlayer) {
-                ignorePlayEvents++;
-                plyrPlayer.source = {
-                    type: 'video',
-                    sources: [
-                        {
-                            src: videoData.videoUrl,
-                            type: 'video/mp4'
-                        }
-                    ]
-                };
-                plyrPlayer.play().catch(err => console.log("Autoplay failed/blocked:", err));
-            } else {
-                ignorePlayEvents++;
-                mainVideo.src = videoData.videoUrl;
-                mainVideo.play().catch(err => console.log("Autoplay failed/blocked:", err));
+            const dropzonePromptText = document.getElementById('dropzonePromptText');
+            if (dropzonePromptText) {
+                dropzonePromptText.innerHTML = `${videoData.sender} shared: <strong style="color: var(--primary);">${videoData.fileName}</strong>.<br>Please select the same video file from your device to watch together!`;
             }
             
-            videoPlayerWrapper.classList.remove('hidden');
-            addNotification(`${videoData.sender} shared: "${videoData.fileName}" (Syncing Preview)`);
+            addNotification(`${videoData.sender || 'Partner'} shared a video: "${videoData.fileName}"`);
         });
 
         window.addEventListener('together_video_action', (e) => {
