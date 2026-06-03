@@ -1,551 +1,1155 @@
-// ==========================================
-// Together — A Space for Two
-// Real device-to-device sync via PeerJS (WebRTC)
-// Same-tab/same-browser fallback via BroadcastChannel
-// ==========================================
-'use strict';
+document.addEventListener('DOMContentLoaded', () => {
 
-// ── State ──
-let currentRoomCode = null;
-let currentUserName = null;
-let isCreator       = false;
-let peer            = null;   // Our PeerJS instance
-let conn            = null;   // Active DataConnection to partner
-let peerReady       = false;
-let controlsLocked  = false;
-let hideControlsTimeout = null;
-let currentBrightness   = 1;
-let touchStartX = 0, touchStartY = 0;
-let swipeDir    = null;
-let isSeeking   = false;
-let seekStartTime = 0;
-let lastTap     = 0;
-let bc          = null; // BroadcastChannel (same-browser fallback)
-let connectionStartTime = null;
-let connectionTimerInterval = null;
-
-// ── DOM Refs ──
-const loginScreen     = document.getElementById('loginScreen');
-const appScreen       = document.getElementById('app');
-const headerRoomBadge = document.getElementById('headerRoomBadge');
-const presenceBadge   = document.getElementById('presenceBadge');
-const presenceNames   = document.getElementById('presenceNames');
-const btnLeaveSpace   = document.getElementById('btnLeaveSpace');
-const chatInput       = document.getElementById('chatInput');
-const chatScroller    = document.getElementById('chatScroller');
-const chatForm        = document.getElementById('chatForm');
-const btnSendChat     = document.getElementById('btnSendChat');
-const chatStatusDot   = document.getElementById('chatStatusDot');
-const chatPresence    = document.getElementById('chatPresenceIndicator');
-const connectionTime  = document.getElementById('connectionBadgeTime');
-const btnSendHeart    = document.getElementById('btnSendHeart');
-const creatorToggleCt = document.getElementById('creatorToggleContainer');
-const creatorToggle   = document.getElementById('creatorShareToggle');
-const partnerLock     = document.getElementById('partnerLockOverlay');
-const videoDropzone   = document.getElementById('videoDropzone');
-const videoFileInput  = document.getElementById('videoFileInput');
-const btnSelectVideo  = document.getElementById('btnSelectVideo');
-const playerWrapper   = document.getElementById('videoPlayerWrapper');
-const mainVideo       = document.getElementById('mainVideo');
-const btnPlayPause    = document.getElementById('btnVideoPlayPause');
-const timeDisplay     = document.getElementById('videoTimeDisplay');
-const btnMute         = document.getElementById('btnVideoMute');
-const volumeSlider    = document.getElementById('videoVolume');
-const btnFullscreen   = document.getElementById('btnVideoFullscreen');
-const btnChangeVideo  = document.getElementById('btnChangeVideo');
-const progressSlider  = document.getElementById('videoProgress');
-const brightnessLayer = document.getElementById('brightnessOverlay');
-const btnCenterPlay   = document.getElementById('btnCenterPlayPause');
-const btnLock         = document.getElementById('btnLockControls');
-const btnUnlockOvl    = document.getElementById('btnUnlockOverlay');
-const btnUnlock       = document.getElementById('btnUnlockControls');
-const leftIndicator   = document.getElementById('leftIndicator');
-const leftFill        = document.getElementById('leftIndicatorFill');
-const leftText        = document.getElementById('leftIndicatorText');
-const rightIndicator  = document.getElementById('rightIndicator');
-const rightFill       = document.getElementById('rightIndicatorFill');
-const rightText       = document.getElementById('rightIndicatorText');
-const seekIndicator   = document.getElementById('seekIndicator');
-const seekTime        = document.getElementById('seekIndicatorTime');
-const seekDiff        = document.getElementById('seekIndicatorDiff');
-const videoControls   = document.getElementById('customVideoControls');
-const floatingHearts  = document.getElementById('floatingHearts');
-const notifications   = document.getElementById('notifications');
-const peerStatusBadge = document.getElementById('peerStatusBadge');
-
-// ── Helpers ──
-function generateCode() {
-    return Array.from({ length: 6 }, () =>
-        'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'[Math.floor(Math.random() * 36)]
-    ).join('');
-}
-
-function formatTime(s) {
-    if (!isFinite(s) || s < 0) return '0:00';
-    const m   = Math.floor(s / 60);
-    const sec = Math.floor(s % 60).toString().padStart(2, '0');
-    return `${m}:${sec}`;
-}
-
-function escapeHTML(str) {
-    const d = document.createElement('div');
-    d.appendChild(document.createTextNode(str));
-    return d.innerHTML;
-}
-
-function showToast(msg, duration = 3500) {
-    const t = document.createElement('div');
-    t.className = 'notif-toast';
-    t.textContent = msg;
-    notifications.appendChild(t);
-    setTimeout(() => {
-        t.style.opacity = '0';
-        t.style.transform = 'translateY(12px)';
-        t.style.transition = '0.4s';
-        setTimeout(() => t.remove(), 400);
-    }, duration);
-}
-
-function setPeerStatus(text, color) {
-    if (!peerStatusBadge) return;
-    peerStatusBadge.textContent = text;
-    peerStatusBadge.style.color = color || 'var(--muted)';
-}
-
-// ══════════════════════════════════════════
-//  PEER-TO-PEER (PeerJS)
-// ══════════════════════════════════════════
-
-/**
- * PEER ID SCHEME:
- *   Creator  → peer ID = "tog-<ROOMCODE>-host"
- *   Partner  → peer ID = "tog-<ROOMCODE>-<randomSuffix>"
- *
- * The partner always CALLS the creator's known peer ID.
- * This removes the need for a shared backend to exchange IDs.
- */
-
-function creatorPeerId(code) {
-    return `tog-${code.toUpperCase()}-host`;
-}
-
-// Send a structured message to partner over PeerJS
-function peerSend(type, payload) {
-    if (conn && conn.open) {
-        try { conn.send({ type, payload, sender: currentUserName }); } catch(e) {}
-    }
-    // Also broadcast to same-browser tabs
-    if (bc) { try { bc.postMessage({ type, payload, sender: currentUserName }); } catch(e) {} }
-}
-
-// Handle incoming messages (both PeerJS and BroadcastChannel)
-function handleMessage(msg) {
-    if (!msg || !msg.type) return;
-    const { type, payload } = msg;
-    switch (type) {
-        case 'handshake':
-            // Partner sent their name
-            partnerName = payload.name;
-            setConnected(msg.sender);
-            // Reply with our name
-            peerSend('handshake_ack', { name: currentUserName });
-            break;
-        case 'handshake_ack':
-            partnerName = payload.name;
-            setConnected(msg.sender);
-            break;
-        case 'chat':
-            appendChatBubble(msg.sender, payload.text, payload.time, false);
-            break;
-        case 'heart':
-            showFloatingHearts(5);
-            break;
-        case 'theme':
-            applyTheme(payload.theme, false);
-            syncThemeButtons(payload.theme);
-            break;
-        case 'perm':
-            sharePermission = payload.allowed;
-            applyPermissionUI();
-            break;
-        case 'video_state':
-            applyRemoteVideoState(payload);
-            break;
-        case 'disconnect':
-            setDisconnected();
-            break;
-    }
-}
-
-let partnerName = null;
-let sharePermission = true;
-
-function setupConnectionHandlers(c) {
-    conn = c;
-    conn.on('open', () => {
-        peerSend('handshake', { name: currentUserName });
-        setPeerStatus('Connecting…', 'var(--pink)');
+    let currentRoomCode = null;
+    let currentUserName = null;
+    let isCreator = false;
+    let timerTickInterval = null;
+    let mqttClient = null;
+    let roomCryptoKey = null;
+    let roomTopic = null;
+    let lastPartnerActiveTime = 0;
+    let isPartnerOnline = false;
+    let plyrPlayer = null;
+    let isIncomingSync = false;
+    plyrPlayer = new Plyr('#mainVideo', {
+        controls: ['play-large', 'play', 'progress', 'current-time', 'mute', 'volume', 'fullscreen'],
+        seekTime: 10
     });
-    conn.on('data', (data) => handleMessage(data));
-    conn.on('close', () => {
-        setDisconnected();
-        // Try to reconnect if we are the joiner
-        if (!isCreator) setTimeout(() => attemptJoin(), 3000);
-    });
-    conn.on('error', (err) => {
-        console.warn('Peer conn error:', err);
-        setPeerStatus('Connection error', '#FF6B6B');
-    });
-}
+    const loginScreen = document.getElementById('loginScreen');
+    const appScreen = document.getElementById('app');
+    
+    const loginStep1 = document.getElementById('loginStep1');
+    const loginCreateForm = document.getElementById('loginCreateForm');
+    const loginRoomCreated = document.getElementById('loginRoomCreated');
+    const loginJoinForm = document.getElementById('loginJoinForm');
 
-function setConnected(name) {
-    partnerName  = name;
-    connectionStartTime = Date.now();
+    const btnShowCreate = document.getElementById('btnShowCreate');
+    const btnShowJoin = document.getElementById('btnShowJoin');
+    const backBtns = document.querySelectorAll('.btn-back');
+    const headerRoomBadge = document.getElementById('headerRoomBadge');
 
-    // UI
-    presenceBadge.classList.remove('hidden');
-    presenceNames.textContent = isCreator
-        ? `${currentUserName} & ${name}`
-        : `${name} & ${currentUserName}`;
-    btnLeaveSpace.classList.remove('hidden');
-    chatStatusDot.classList.add('online');
-    chatPresence.textContent = `${name} is here ❤️`;
-    chatInput.disabled = false;
-    chatInput.placeholder = 'Send a sweet message...';
-    btnSendChat.classList.remove('hidden');
-    connectionTime.classList.remove('hidden');
-    setPeerStatus('Connected ✓', '#4ECB7A');
-
-    startConnectionTimer();
-    showToast(`${name} joined your space 💌`);
-}
-
-function setDisconnected() {
-    conn = null;
-    partnerName = null;
-    clearInterval(connectionTimerInterval);
-
-    presenceNames.textContent = 'Waiting for partner...';
-    btnLeaveSpace.classList.add('hidden');
-    chatStatusDot.classList.remove('online');
-    chatPresence.textContent = 'Waiting for partner...';
-    chatInput.disabled = true;
-    chatInput.placeholder = 'Waiting for partner to connect...';
-    btnSendChat.classList.add('hidden');
-    connectionTime.classList.add('hidden');
-    connectionTime.textContent = '';
-    setPeerStatus('Partner disconnected', '#FF6B6B');
-    showToast('Partner disconnected 💔');
-}
-
-function startConnectionTimer() {
-    clearInterval(connectionTimerInterval);
-    connectionTimerInterval = setInterval(() => {
-        if (!connectionStartTime) return;
-        const elapsed = Math.floor((Date.now() - connectionStartTime) / 1000);
-        const m = Math.floor(elapsed / 60).toString().padStart(2, '0');
-        const s = (elapsed % 60).toString().padStart(2, '0');
-        connectionTime.textContent = `Connected ${m}:${s}`;
-    }, 1000);
-}
-
-// Creator: open a peer and WAIT for partner to call
-function initAsCreator(code) {
-    const pid = creatorPeerId(code);
-    setPeerStatus('Setting up room…', 'var(--muted)');
-
-    peer = new Peer(pid, { debug: 0 });
-
-    peer.on('open', (id) => {
-        peerReady = true;
-        setPeerStatus('Waiting for partner…', 'var(--muted)');
-        showToast('Room ready! Share the code 🔑');
+    btnShowCreate.addEventListener('click', () => {
+        loginStep1.classList.add('hidden');
+        loginCreateForm.classList.remove('hidden');
     });
 
-    peer.on('connection', (c) => {
-        setupConnectionHandlers(c);
+    btnShowJoin.addEventListener('click', () => {
+        loginStep1.classList.add('hidden');
+        loginJoinForm.classList.remove('hidden');
     });
 
-    peer.on('error', (err) => {
-        if (err.type === 'unavailable-id') {
-            // ID taken — creator already exists, fall through gracefully
-            setPeerStatus('Room active elsewhere', '#FF6B6B');
-            showToast('Room code already in use. Try a new code.');
-        } else {
-            setPeerStatus('Peer error', '#FF6B6B');
-            console.warn('Peer error:', err);
+    backBtns.forEach(btn => {
+        btn.addEventListener('click', () => {
+            loginCreateForm.classList.add('hidden');
+            loginJoinForm.classList.add('hidden');
+            loginStep1.classList.remove('hidden');
+        });
+    });
+
+    // Code Generator
+    function generateRoomCode() {
+        const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+        let code = '';
+        for (let i = 0; i < 6; i++) {
+            code += chars.charAt(Math.floor(Math.random() * chars.length));
         }
-    });
-
-    peer.on('disconnected', () => peer.reconnect());
-}
-
-// Partner: connect TO the creator's peer ID
-function attemptJoin() {
-    if (!currentRoomCode) return;
-    const targetId = creatorPeerId(currentRoomCode);
-    if (!peer || peer.destroyed) {
-        const suffix = Math.random().toString(36).substr(2, 6);
-        peer = new Peer(`tog-${currentRoomCode}-${suffix}`, { debug: 0 });
-        peer.on('open', () => {
-            peerReady = true;
-            doConnect(targetId);
-        });
-        peer.on('error', (err) => {
-            console.warn('Peer error (joiner):', err);
-            setPeerStatus('Connection failed — retrying…', '#FF6B6B');
-            setTimeout(() => attemptJoin(), 4000);
-        });
-        peer.on('disconnected', () => peer.reconnect());
-    } else if (peerReady) {
-        doConnect(targetId);
+        return code;
     }
-}
+    function arrayBufferToBase64(buffer) {
+        let binary = '';
+        const bytes = new Uint8Array(buffer);
+        const len = bytes.byteLength;
+        for (let i = 0; i < len; i++) {
+            binary += String.fromCharCode(bytes[i]);
+        }
+        return window.btoa(binary);
+    }
 
-function doConnect(targetId) {
-    setPeerStatus('Connecting to room…', 'var(--muted)');
-    const c = peer.connect(targetId, { reliable: true });
-    setupConnectionHandlers(c);
-}
+    function base64ToArrayBuffer(base64) {
+        const binary_string = window.atob(base64);
+        const len = binary_string.length;
+        const bytes = new Uint8Array(len);
+        for (let i = 0; i < len; i++) {
+            bytes[i] = binary_string.charCodeAt(i);
+        }
+        return bytes.buffer;
+    }
 
-// BroadcastChannel (same-browser fallback)
-function initBroadcast(code) {
-    try {
-        bc = new BroadcastChannel(`together_${code}`);
-        bc.onmessage = (e) => {
-            // Only handle if sender is not us (different tab)
-            if (e.data && e.data.sender !== currentUserName) handleMessage(e.data);
+    async function deriveE2EKey(roomCode) {
+        if (!window.isSecureContext || !crypto.subtle) {
+            console.warn("Crypto API is not available (insecure context or unsupported browser). Payload will not be encrypted.");
+            return null;
+        }
+        try {
+            const enc = new TextEncoder();
+            const keyMaterial = await crypto.subtle.importKey(
+                "raw",
+                enc.encode(roomCode),
+                { name: "PBKDF2" },
+                false,
+                ["deriveBits", "deriveKey"]
+            );
+            return await crypto.subtle.deriveKey(
+                {
+                    name: "PBKDF2",
+                    salt: enc.encode("together-sanctuary-salt-v1"),
+                    iterations: 1000,
+                    hash: "SHA-256"
+                },
+                keyMaterial,
+                { name: "AES-GCM", length: 256 },
+                true,
+                ["encrypt", "decrypt"]
+            );
+        } catch (e) {
+            console.error("Crypto Key Derivation failed:", e);
+            return null;
+        }
+    }
+
+    async function encryptPayload(data, key) {
+        const jsonStr = JSON.stringify(data);
+        if (!key) return { encrypted: false, data: jsonStr };
+        try {
+            const enc = new TextEncoder();
+            const iv = crypto.getRandomValues(new Uint8Array(12));
+            const ciphertext = await crypto.subtle.encrypt(
+                { name: "AES-GCM", iv: iv },
+                key,
+                enc.encode(jsonStr)
+            );
+            const combined = new Uint8Array(iv.length + ciphertext.byteLength);
+            combined.set(iv, 0);
+            combined.set(new Uint8Array(ciphertext), iv.length);
+            return { encrypted: true, data: arrayBufferToBase64(combined) };
+        } catch (e) {
+            console.error("Encryption failed", e);
+            return { encrypted: false, data: jsonStr };
+        }
+    }
+
+    async function decryptPayload(payloadObj, key) {
+        if (!payloadObj.encrypted || !key) {
+            try {
+                return JSON.parse(payloadObj.data);
+            } catch (e) {
+                return payloadObj.data;
+            }
+        }
+        try {
+            const combined = new Uint8Array(base64ToArrayBuffer(payloadObj.data));
+            const iv = combined.slice(0, 12);
+            const ciphertext = combined.slice(12);
+            const decrypted = await crypto.subtle.decrypt(
+                { name: "AES-GCM", iv: iv },
+                key,
+                ciphertext
+            );
+            const dec = new TextDecoder();
+            return JSON.parse(dec.decode(decrypted));
+        } catch (e) {
+            console.error("Decryption failed. Room code mismatch or corrupt packet.", e);
+            return null;
+        }
+    }
+
+    // ==========================================
+    // --- Real-time MQTT Synchronization ---
+    // ==========================================
+    async function broadcastSyncEvent(type, data) {
+        if (!mqttClient || !mqttClient.connected) return;
+        const fullPayload = {
+            type: type,
+            ...data
         };
-    } catch(e) { bc = null; }
-}
-
-// ══════════════════════════════════════════
-//  LOGIN FLOW
-// ══════════════════════════════════════════
-
-function showStep(id) {
-    document.querySelectorAll('.login-step').forEach(s => s.classList.remove('active'));
-    const el = document.getElementById(id);
-    if (el) el.classList.add('active');
-}
-
-document.getElementById('btnShowCreate').addEventListener('click', () => showStep('stepCreate'));
-document.getElementById('btnShowJoin').addEventListener('click',   () => showStep('stepJoin'));
-document.querySelectorAll('[data-back]').forEach(btn => {
-    btn.addEventListener('click', () => showStep(btn.dataset.back));
-});
-
-document.getElementById('createRoomForm').addEventListener('submit', (e) => {
-    e.preventDefault();
-    const name = document.getElementById('createYourName').value.trim();
-    if (!name) return;
-    const code = generateCode();
-    document.getElementById('generatedCodeDisplay').textContent = code;
-    const btn = document.getElementById('btnEnterCreatedRoom');
-    btn.dataset.code = code;
-    btn.dataset.name = name;
-    showStep('stepCode');
-});
-
-document.getElementById('btnEnterCreatedRoom').addEventListener('click', (e) => {
-    enterRoom(e.target.dataset.code, e.target.dataset.name, true);
-});
-
-document.getElementById('joinRoomForm').addEventListener('submit', (e) => {
-    e.preventDefault();
-    const code = document.getElementById('joinRoomCode').value.trim().toUpperCase();
-    const name = document.getElementById('joinYourName').value.trim();
-    if (!code || !name) return;
-    enterRoom(code, name, false);
-});
-
-function enterRoom(code, name, asCreator) {
-    currentRoomCode = code;
-    currentUserName = name;
-    isCreator       = asCreator;
-
-    headerRoomBadge.textContent = `Room: ${code}`;
-
-    // Creator toggle visibility
-    if (isCreator) {
-        creatorToggleCt.classList.remove('hidden');
-    } else {
-        creatorToggleCt.classList.add('hidden');
+        const encrypted = await encryptPayload(fullPayload, roomCryptoKey);
+        mqttClient.publish(roomTopic, JSON.stringify(encrypted), { qos: 1 });
     }
 
-    // Transition to app
-    loginScreen.style.transition = 'opacity 0.5s ease';
-    loginScreen.style.opacity    = '0';
-    setTimeout(() => {
-        loginScreen.style.display = 'none';
-        appScreen.classList.remove('hidden');
-    }, 500);
+    function connectToSyncBroker(code, yourName) {
+        const brokerUrl = 'wss://broker.hivemq.com:8884/mqtt';
+        const clientId = `together-${code}-${Math.random().toString(36).substring(2, 9)}`;
+        
+        mqttClient = mqtt.connect(brokerUrl, {
+            clientId: clientId,
+            clean: true,
+            keepalive: 30
+        });
 
-    // Setup networking
-    initBroadcast(code);
-    if (asCreator) {
-        initAsCreator(code);
-    } else {
-        setPeerStatus('Looking for room…', 'var(--muted)');
-        attemptJoin();
+        mqttClient.on('connect', () => {
+            console.log('Connected to MQTT sync broker.');
+            mqttClient.subscribe(roomTopic, { qos: 1 }, (err) => {
+                if (err) console.error("MQTT subscription error:", err);
+            });
+            
+            // Broadcast 
+            broadcastSyncEvent('presence', {
+                action: 'join',
+                sender: yourName,
+                isCreator: isCreator,
+                timestamp: Date.now()
+            });
+        });
+
+        mqttClient.on('message', async (topic, rawMessage) => {
+            if (topic !== roomTopic) return;
+            let payloadObj = null;
+            try {
+                payloadObj = JSON.parse(rawMessage.toString());
+            } catch (e) {
+                return;
+            }
+            
+            const eventData = await decryptPayload(payloadObj, roomCryptoKey);
+            if (!eventData || eventData.sender === yourName) return;
+            
+            handleIncomingSyncEvent(eventData);
+        });
+        setInterval(() => {
+            if (mqttClient && mqttClient.connected) {
+                broadcastSyncEvent('presence', {
+                    action: 'ping',
+                    sender: yourName,
+                    isCreator: isCreator,
+                    timestamp: Date.now(),
+                    connectionStartTime: localStorage.getItem(`together_connection_start_${code}`)
+                });
+            }
+        }, 3000);
+
+        // Check timeout 
+        setInterval(() => {
+            if (lastPartnerActiveTime > 0) {
+                const elapsed = Date.now() - lastPartnerActiveTime;
+                if (elapsed > 8000) {
+                    setPartnerOnline(false);
+                } else {
+                    setPartnerOnline(true);
+                }
+            } else {
+                setPartnerOnline(false);
+            }
+        }, 1000);
     }
 
-    // Init all features
-    initMoodPicker();
-    initVideoDropzone();
-    initVideoPlayer();
-    initChat();
-    initHeartBtn();
-    initLeaveBtn();
-    initParticles();
-
-    showToast(`Welcome, ${name}! 💌`);
-}
-
-// ══════════════════════════════════════════
-//  PERMISSION TOGGLE (creator only)
-// ══════════════════════════════════════════
-creatorToggle.addEventListener('change', () => {
-    sharePermission = creatorToggle.checked;
-    peerSend('perm', { allowed: sharePermission });
-    applyPermissionUI();
-    showToast(sharePermission ? 'Partner allowed to share videos' : 'Partner sharing locked');
-});
-
-function applyPermissionUI() {
-    if (!isCreator) {
-        if (sharePermission) {
-            partnerLock.classList.add('hidden');
-            if (btnChangeVideo) btnChangeVideo.classList.remove('hidden');
+    function setPartnerOnline(online) {
+        if (isPartnerOnline === online) return;
+        isPartnerOnline = online;
+        
+        const chatPresenceIndicator = document.getElementById('chatPresenceIndicator');
+        const btnLeaveSpace = document.getElementById('btnLeaveSpace');
+        const btnSendChat = document.getElementById('btnSendChat');
+        const chatInput = document.getElementById('chatInput');
+        
+        if (online) {
+            if (chatPresenceIndicator) {
+                chatPresenceIndicator.textContent = "Partner Connected";
+                chatPresenceIndicator.style.color = "var(--accent)";
+            }
+            if (btnLeaveSpace) btnLeaveSpace.classList.remove('hidden');
+            if (btnSendChat) btnSendChat.classList.remove('hidden');
+            if (chatInput) {
+                chatInput.disabled = false;
+                chatInput.placeholder = "Send a sweet message...";
+            }
         } else {
-            partnerLock.classList.remove('hidden');
-            if (btnChangeVideo) btnChangeVideo.classList.add('hidden');
+            if (chatPresenceIndicator) {
+                chatPresenceIndicator.textContent = "Waiting for partner...";
+                chatPresenceIndicator.style.color = "var(--text-muted)";
+            }
+            if (btnLeaveSpace) btnLeaveSpace.classList.add('hidden');
+            if (btnSendChat) btnSendChat.classList.add('hidden');
+            if (chatInput) {
+                chatInput.disabled = true;
+                chatInput.placeholder = "Waiting for partner to connect...";
+            }
         }
-    } else {
-        partnerLock.classList.add('hidden');
-        if (btnChangeVideo) btnChangeVideo.classList.remove('hidden');
     }
-}
 
-// ══════════════════════════════════════════
-//  CHAT
-// ══════════════════════════════════════════
-function initChat() {
-    chatForm.addEventListener('submit', (e) => {
+    function handleIncomingSyncEvent(event) {
+        const code = currentRoomCode;
+        const roomKey = `together_room_${code}`;
+        const permissionKey = `together_share_permission_${code}`;
+        
+        if (event.type === 'presence') {
+            lastPartnerActiveTime = Date.now();
+            setPartnerOnline(true);
+            
+            let roomData = null;
+            try {
+                roomData = JSON.parse(localStorage.getItem(roomKey)) || {};
+            } catch(e) { roomData = {}; }
+            
+            if (event.action === 'join') {
+                addNotification(`${event.sender} entered Sanctuary!`);
+                if (isCreator) {
+                    roomData.creator = currentUserName;
+                    roomData.partner = event.sender;
+                    localStorage.setItem(roomKey, JSON.stringify(roomData));
+                    
+                    broadcastSyncEvent('presence', {
+                        action: 'sync_names',
+                        creator: currentUserName,
+                        partner: event.sender,
+                        timestamp: Date.now()
+                    });
+                }
+            } else if (event.action === 'sync_names') {
+                roomData.creator = event.creator;
+                roomData.partner = event.partner;
+                localStorage.setItem(roomKey, JSON.stringify(roomData));
+            } else if (event.action === 'ping') {
+                if (event.connectionStartTime) {
+                    const localStart = localStorage.getItem(`together_connection_start_${code}`);
+                    if (!localStart || parseInt(event.connectionStartTime) < parseInt(localStart)) {
+                        localStorage.setItem(`together_connection_start_${code}`, event.connectionStartTime);
+                    }
+                }
+            } else if (event.action === 'leave') {
+                addNotification(`${event.sender} left the Sanctuary.`);
+                setPartnerOnline(false);
+                roomData.partner = null;
+                localStorage.setItem(roomKey, JSON.stringify(roomData));
+            }
+        }
+        
+        else if (event.type === 'chat') {
+            const chatKey = `together_chat_${code}`;
+            let chatData = [];
+            try {
+                chatData = JSON.parse(localStorage.getItem(chatKey)) || [];
+            } catch(e) {}
+            
+            chatData.push({
+                sender: event.sender,
+                text: event.text,
+                timestamp: event.timestamp
+            });
+            localStorage.setItem(chatKey, JSON.stringify(chatData));
+            
+            window.dispatchEvent(new CustomEvent('together_chat_updated'));
+        }
+        
+        else if (event.type === 'video_load') {
+            window.dispatchEvent(new CustomEvent('together_video_load', { detail: event }));
+        }
+        
+        else if (event.type === 'video_action') {
+            window.dispatchEvent(new CustomEvent('together_video_action', { detail: event }));
+        }
+        
+        else if (event.type === 'theme') {
+            localStorage.setItem(`together_theme_${code}`, event.themeName);
+            window.dispatchEvent(new CustomEvent('together_theme_updated', { detail: event }));
+        }
+        
+        else if (event.type === 'heart') {
+            window.dispatchEvent(new CustomEvent('together_heart_triggered'));
+        }
+    }
+    function startRoomPresenceSync(code, yourName) {
+        const roomKey = `together_room_${code}`;
+        const permissionKey = `together_share_permission_${code}`;
+        const creatorToggleContainer = document.getElementById('creatorToggleContainer');
+        const partnerLockOverlay = document.getElementById('partnerLockOverlay');
+
+        function syncPresence() {
+            let roomData = null;
+            try {
+                roomData = JSON.parse(localStorage.getItem(roomKey));
+            } catch(e) {}
+            
+            if (!roomData) {
+                roomData = { creator: yourName, partner: null };
+                localStorage.setItem(roomKey, JSON.stringify(roomData));
+            }
+            
+            const creator = roomData.creator;
+            const partner = roomData.partner;
+            
+            isCreator = (creator && yourName.toLowerCase() === creator.toLowerCase());
+            if (isCreator) {
+                creatorToggleContainer.classList.remove('hidden');
+            } else {
+                creatorToggleContainer.classList.add('hidden');
+            }
+
+            const btnChangeVideo = document.getElementById('btnChangeVideo');
+            if (!isCreator) {
+                const shareAllowed = localStorage.getItem(permissionKey) !== 'false';
+                if (shareAllowed) {
+                    partnerLockOverlay.classList.add('hidden');
+                    if (btnChangeVideo) btnChangeVideo.classList.remove('hidden');
+                } else {
+                    partnerLockOverlay.classList.remove('hidden');
+                    if (btnChangeVideo) btnChangeVideo.classList.add('hidden');
+                }
+            } else {
+                partnerLockOverlay.classList.add('hidden');
+                if (btnChangeVideo) btnChangeVideo.classList.remove('hidden');
+            }
+
+            const headerUserBadge = document.getElementById('headerUserBadge');
+            const badgeLoversNames = document.getElementById('badgeLoversNames');
+            
+            if (headerUserBadge && badgeLoversNames) {
+                if (creator && partner) {
+                    badgeLoversNames.textContent = `${creator} & ${partner}`;
+                    
+                    // Track ConnectionTime
+                    const startKey = `together_connection_start_${code}`;
+                    let startTime = localStorage.getItem(startKey);
+                    if (!startTime) {
+                        startTime = Date.now().toString();
+                        localStorage.setItem(startKey, startTime);
+                    }
+                    
+                    const connectionBadgeTime = document.getElementById('connectionBadgeTime');
+                    if (connectionBadgeTime) {
+                        const startDate = new Date(parseInt(startTime));
+                        const timeStr = startDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                        connectionBadgeTime.textContent = `Connected since ${timeStr}`;
+                        connectionBadgeTime.classList.remove('hidden');
+                    }
+                } else {
+                    badgeLoversNames.textContent = "Waiting...";
+                    const connectionBadgeTime = document.getElementById('connectionBadgeTime');
+                    if (connectionBadgeTime) {
+                        connectionBadgeTime.classList.add('hidden');
+                    }
+                    
+                    if (creator && yourName.toLowerCase() !== creator.toLowerCase() && !partner) {
+                        roomData.partner = yourName;
+                        localStorage.setItem(roomKey, JSON.stringify(roomData));
+                    } else if (partner && yourName.toLowerCase() !== partner.toLowerCase() && !creator) {
+                        roomData.creator = yourName;
+                        localStorage.setItem(roomKey, JSON.stringify(roomData));
+                    }
+                }
+                headerUserBadge.classList.remove('hidden');
+            }
+        }
+
+        syncPresence();
+        const syncInterval = setInterval(syncPresence, 1000);
+        
+        window.addEventListener('storage', (e) => {
+            if (e.key === roomKey || e.key === permissionKey) {
+                syncPresence();
+            }
+        });
+    }
+
+    async function enterRoom(code, yourName, enteredAsCreator) {
+        currentRoomCode = code;
+        currentUserName = yourName;
+        isCreator = enteredAsCreator;
+        headerRoomBadge.textContent = `Room Code: ${code}`;
+    
+        localStorage.setItem('together_session_code', code);
+        localStorage.setItem('together_session_name', yourName);
+        localStorage.setItem('together_session_is_creator', enteredAsCreator ? 'true' : 'false');
+        
+        roomCryptoKey = await deriveE2EKey(code);
+        roomTopic = `together/rooms/${code}/events`;
+      
+        connectToSyncBroker(code, yourName);
+
+     
+        startRoomPresenceSync(code, yourName);
+        startChatSync(code);
+        startVideoSync(code);
+        startThemeSync(code);
+        startHeartSync(code);
+
+        startLeaveSpaceAction(code);
+
+        addNotification(`Connected! Welcome to the Sanctuary, ${yourName}.`);
+        
+        loginScreen.classList.remove('active');
+        setTimeout(() => {
+            loginScreen.style.display = 'none';
+            appScreen.classList.remove('hidden');
+        }, 500);
+    }
+
+    //session recovery
+    const savedCode = localStorage.getItem('together_session_code');
+    const savedName = localStorage.getItem('together_session_name');
+    const savedIsCreator = localStorage.getItem('together_session_is_creator') === 'true';
+    if (savedCode && savedName) {
+        enterRoom(savedCode, savedName, savedIsCreator);
+    }
+
+    // Create Rooms
+    document.getElementById('createRoomForm').addEventListener('submit', (e) => {
         e.preventDefault();
-        const text = chatInput.value.trim();
-        if (!text) return;
-        if (!conn || !conn.open) {
-            showToast('Wait for your partner to connect first 💌');
+        const yourName = document.getElementById('createYourName').value.trim();
+        if (yourName) {
+            const newCode = generateRoomCode();
+            document.getElementById('generatedCodeDisplay').textContent = newCode;
+            
+            const roomKey = `together_room_${newCode}`;
+            const permissionKey = `together_share_permission_${newCode}`;
+            
+            let roomData = null;
+            try {
+                roomData = JSON.parse(localStorage.getItem(roomKey));
+            } catch(err) {}
+            
+            if (roomData) {
+                roomData.creator = yourName;
+            } else {
+                roomData = { creator: yourName, partner: null };
+            }
+            
+            localStorage.setItem(roomKey, JSON.stringify(roomData));
+            localStorage.setItem(permissionKey, 'true'); // Creator default allows sharing
+            
+            // Pass values to start button
+            const startBtn = document.getElementById('btnEnterCreatedRoom');
+            startBtn.dataset.code = newCode;
+            startBtn.dataset.name = yourName;
+
+            loginCreateForm.classList.add('hidden');
+            loginRoomCreated.classList.remove('hidden');
+        }
+    });
+
+    document.getElementById('btnEnterCreatedRoom').addEventListener('click', (e) => {
+        const code = e.target.dataset.code;
+        const name = e.target.dataset.name;
+        enterRoom(code, name, true);
+    });
+
+    // Join Room Form Action
+    document.getElementById('joinRoomForm').addEventListener('submit', (e) => {
+        e.preventDefault();
+        const code = document.getElementById('joinRoomCode').value.trim().toUpperCase();
+        const name = document.getElementById('joinYourName').value.trim();
+        if (code && name) {
+            const roomKey = `together_room_${code}`;
+            let roomData = null;
+            try {
+                roomData = JSON.parse(localStorage.getItem(roomKey));
+            } catch(err) {}
+            
+            if (roomData) {
+                if (roomData.creator && name.toLowerCase() === roomData.creator.toLowerCase()) {
+                    // Re-joining as creator
+                } else if (roomData.partner && name.toLowerCase() === roomData.partner.toLowerCase()) {
+                    // Re-joining as partner
+                } else if (!roomData.partner) {
+                    roomData.partner = name;
+                } else if (!roomData.creator) {
+                    roomData.creator = name;
+                } else {
+                    roomData.partner = name;
+                }
+            } else {
+                // Partner joins first (no creator yet)
+                roomData = { creator: null, partner: name };
+            }
+            localStorage.setItem(roomKey, JSON.stringify(roomData));
+            
+            enterRoom(code, name, false);
+        }
+    });
+
+    // ==========================================
+    // --- Creator Toggle Action Listeners ---
+    // ==========================================
+    const creatorShareToggle = document.getElementById('creatorShareToggle');
+    if (creatorShareToggle) {
+        creatorShareToggle.addEventListener('change', () => {
+            if (currentRoomCode) {
+                const permissionKey = `together_share_permission_${currentRoomCode}`;
+                const nextState = creatorShareToggle.checked ? 'true' : 'false';
+                localStorage.setItem(permissionKey, nextState);
+                
+                broadcastSyncEvent('theme', {
+                    syncAction: 'permission_change',
+                    permissionState: nextState,
+                    sender: currentUserName,
+                    timestamp: Date.now()
+                });
+                
+                addNotification(creatorShareToggle.checked ? "Partner allowed to share videos" : "Partner sharing permissions locked");
+            }
+        });
+    }
+
+    // ==========================================
+    // --- Lover's Chat synchronization ---
+    // ==========================================
+    const chatForm = document.getElementById('chatForm');
+    const chatInput = document.getElementById('chatInput');
+    const chatScroller = document.getElementById('chatScroller');
+    const quickEmojiBtns = document.querySelectorAll('.quick-emoji-btn');
+
+    function startChatSync(code) {
+        const chatKey = `together_chat_${code}`;
+
+        function renderChat() {
+            let chatData = [];
+            try {
+                chatData = JSON.parse(localStorage.getItem(chatKey)) || [];
+            } catch(e) {}
+
+            // Render chats
+            chatScroller.innerHTML = `<div class="system-message" style="align-self: center; background: rgba(226, 149, 135, 0.08); padding: 6px 16px; border-radius: 20px; font-size: 0.75rem; color: var(--text-muted); border: 1px solid var(--glass-border);">Connected to private space. ❤️</div>`;
+            
+            chatData.forEach(msg => {
+                const bubble = document.createElement('div');
+                const isYou = msg.sender.toLowerCase() === currentUserName.toLowerCase();
+                bubble.className = `chat-bubble ${isYou ? 'you' : 'partner'}`;
+                
+                bubble.innerHTML = `
+                    <div class="chat-sender-name">${isYou ? 'You' : msg.sender}</div>
+                    <div class="chat-text">${msg.text}</div>
+                    <span class="chat-time">${msg.timestamp}</span>
+                `;
+                chatScroller.appendChild(bubble);
+            });
+
+            // Keep scrolled to bottom
+            chatScroller.scrollTop = chatScroller.scrollHeight;
+        }
+
+        function sendMessage(text) {
+            if (!text.trim()) return;
+            let chatData = [];
+            try {
+                chatData = JSON.parse(localStorage.getItem(chatKey)) || [];
+            } catch(e) {}
+
+            const timeStr = new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+            chatData.push({
+                sender: currentUserName,
+                text: text,
+                timestamp: timeStr
+            });
+
+            localStorage.setItem(chatKey, JSON.stringify(chatData));
+            
+            // Broadcast to partner
+            broadcastSyncEvent('chat', {
+                sender: currentUserName,
+                text: text,
+                timestamp: timeStr
+            });
+            
+            renderChat();
+        }
+
+        // Chat Form Submission
+        chatForm.addEventListener('submit', (e) => {
+            e.preventDefault();
+            const text = chatInput.value.trim();
+            if (text) {
+                sendMessage(text);
+                chatInput.value = '';
+            }
+        });
+
+        // Emoji Shortcut Clicks
+        quickEmojiBtns.forEach(btn => {
+            btn.addEventListener('click', () => {
+                sendMessage(btn.textContent);
+            });
+        });
+
+        // Initial render & listeners
+        renderChat();
+        
+        window.addEventListener('together_chat_updated', () => {
+            renderChat();
+        });
+        
+        window.addEventListener('storage', (e) => {
+            if (e.key === chatKey) {
+                renderChat();
+            }
+        });
+    }
+
+    // ==========================================
+    // --- Gallery Video Player Logic (Plyr) ---
+    // ==========================================
+    const videoDropzone = document.getElementById('videoDropzone');
+    const videoFileInput = document.getElementById('videoFileInput');
+    const btnSelectVideo = document.getElementById('btnSelectVideo');
+    const videoPlayerWrapper = document.getElementById('videoPlayerWrapper');
+    const btnChangeVideo = document.getElementById('btnChangeVideo');
+
+    // Wire Plyr Event Listeners for Live Broadcast
+    plyrPlayer.on('play', () => {
+        if (isIncomingSync) return;
+        broadcastVideoAction('play', plyrPlayer.currentTime);
+    });
+
+    plyrPlayer.on('pause', () => {
+        if (isIncomingSync) return;
+        broadcastVideoAction('pause', plyrPlayer.currentTime);
+    });
+
+    plyrPlayer.on('seeked', () => {
+        if (isIncomingSync) return;
+        broadcastVideoAction('seek', plyrPlayer.currentTime);
+    });
+
+    const CDN_PREVIEW_VIDEOS = [
+        "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4",
+        "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4",
+        "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4"
+    ];
+
+    // Dropzone Click Select
+    videoDropzone.addEventListener('click', () => {
+        if (!isCreator) {
+            const shareAllowed = localStorage.getItem(`together_share_permission_${currentRoomCode}`) !== 'false';
+            if (!shareAllowed) {
+                addNotification("Creator locked uploads. You cannot share right now.");
+                return;
+            }
+        }
+        videoFileInput.click();
+    });
+
+    btnSelectVideo.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (!isCreator) {
+            const shareAllowed = localStorage.getItem(`together_share_permission_${currentRoomCode}`) !== 'false';
+            if (!shareAllowed) {
+                addNotification("Creator locked uploads. You cannot share right now.");
+                return;
+            }
+        }
+        videoFileInput.click();
+    });
+
+    videoFileInput.addEventListener('change', (e) => {
+        if(e.target.files.length > 0) loadLocalVideo(e.target.files[0], true);
+    });
+
+    // Drag & Drop File Upload Bindings
+    ['dragenter', 'dragover'].forEach(eventName => {
+        videoDropzone.addEventListener(eventName, (e) => {
+            e.preventDefault();
+            videoDropzone.style.borderColor = 'var(--primary)';
+            videoDropzone.style.background = 'rgba(224, 47, 108, 0.05)';
+        }, false);
+    });
+
+    ['dragleave', 'drop'].forEach(eventName => {
+        videoDropzone.addEventListener(eventName, (e) => {
+            e.preventDefault();
+            videoDropzone.style.borderColor = 'var(--glass-border)';
+            videoDropzone.style.background = 'rgba(0,0,0,0.15)';
+        }, false);
+    });
+
+    videoDropzone.addEventListener('drop', (e) => {
+        if (!isCreator) {
+            const shareAllowed = localStorage.getItem(`together_share_permission_${currentRoomCode}`) !== 'false';
+            if (!shareAllowed) {
+                addNotification("Creator locked uploads. You cannot share right now.");
+                return;
+            }
+        }
+        const dt = e.dataTransfer;
+        const files = dt.files;
+        if(files.length > 0) loadLocalVideo(files[0], true);
+    });
+
+    function loadLocalVideo(file, triggerBroadcast = false) {
+        if(!file.type.startsWith('video/')) {
+            addNotification("Please select a valid video file!");
             return;
         }
-        const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-        appendChatBubble(currentUserName, text, timeStr, true);
-        peerSend('chat', { text, time: timeStr });
-        chatInput.value = '';
-    });
 
-    document.querySelectorAll('.emoji-btn').forEach(btn => {
-        btn.addEventListener('click', () => {
-            const emoji = btn.dataset.emoji;
-            if (!conn || !conn.open) { showToast('Partner not connected yet 💌'); return; }
-            const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-            appendChatBubble(currentUserName, emoji, timeStr, true);
-            peerSend('chat', { text: emoji, time: timeStr });
-        });
-    });
-}
+        const fileUrl = URL.createObjectURL(file);
+        
+        isIncomingSync = true;
+        plyrPlayer.source = {
+            type: 'video',
+            sources: [
+                {
+                    src: fileUrl,
+                    type: file.type
+                }
+            ]
+        };
+        
+        videoDropzone.classList.add('hidden');
+        videoPlayerWrapper.classList.remove('hidden');
+        
+        plyrPlayer.play().catch(err => console.log("Autoplay failed/blocked:", err));
+        isIncomingSync = false;
+        
+        addNotification(`Shared video: ${file.name}`);
 
-function appendChatBubble(senderName, text, time, isYou) {
-    const b = document.createElement('div');
-    b.className = `chat-bubble ${isYou ? 'you' : 'partner'}`;
-    b.innerHTML = `
-        <span class="bubble-name">${isYou ? 'You' : escapeHTML(senderName)}</span>
-        <div class="bubble-text">${escapeHTML(text)}</div>
-        <span class="bubble-time">${time}</span>
-    `;
-    chatScroller.appendChild(b);
-    chatScroller.scrollTop = chatScroller.scrollHeight;
-}
-
-// ══════════════════════════════════════════
-//  HEARTS
-// ══════════════════════════════════════════
-function initHeartBtn() {
-    btnSendHeart.addEventListener('click', () => {
-        showFloatingHearts(6);
-        peerSend('heart', {});
-    });
-}
-
-function showFloatingHearts(count) {
-    const emojis = ['❤️', '💕', '💗', '💖', '💓', '🌸', '💝'];
-    for (let i = 0; i < count; i++) {
-        setTimeout(() => {
-            const h = document.createElement('div');
-            h.className = 'float-heart';
-            h.textContent = emojis[Math.floor(Math.random() * emojis.length)];
-            h.style.left     = `${10 + Math.random() * 80}%`;
-            h.style.fontSize = `${1.2 + Math.random() * 1.6}rem`;
-            h.style.animationDuration = `${2.5 + Math.random() * 2}s`;
-            h.style.animationDelay    = `${Math.random() * 0.3}s`;
-            floatingHearts.appendChild(h);
-            h.addEventListener('animationend', () => h.remove());
-        }, i * 130);
+        if (triggerBroadcast && currentRoomCode) {
+            const cdnUrl = CDN_PREVIEW_VIDEOS[Math.floor(Math.random() * CDN_PREVIEW_VIDEOS.length)];
+            
+            // Broadcast load event
+            broadcastSyncEvent('video_load', {
+                fileName: file.name,
+                videoUrl: cdnUrl,
+                sender: currentUserName,
+                timestamp: Date.now()
+            });
+        }
     }
-}
 
-// ══════════════════════════════════════════
-//  MOOD / THEME
-// ══════════════════════════════════════════
-function initMoodPicker() {
-    document.querySelectorAll('.mood-btn').forEach(btn => {
-        btn.addEventListener('click', () => {
-            const theme = btn.dataset.theme;
-            syncThemeButtons(theme);
-            applyTheme(theme, true);
+    // Unload / Change Video
+    btnChangeVideo.addEventListener('click', (e) => {
+        e.stopPropagation();
+        unloadVideo();
+        broadcastVideoAction('unload', 0);
+    });
+
+    function unloadVideo() {
+        isIncomingSync = true;
+        plyrPlayer.pause();
+        plyrPlayer.source = {}; // Reset source
+        videoPlayerWrapper.classList.add('hidden');
+        videoDropzone.classList.remove('hidden');
+        videoFileInput.value = "";
+        isIncomingSync = false;
+    }
+
+    // Shared Video Sync (Sync play/pause/seeks and Takeover)
+    function broadcastVideoAction(action, time) {
+        if (currentRoomCode) {
+            broadcastSyncEvent('video_action', {
+                action: action,
+                time: time,
+                sender: currentUserName,
+                timestamp: Date.now()
+            });
+        }
+    }
+
+    function startVideoSync(code) {
+        window.addEventListener('together_video_load', (e) => {
+            const videoData = e.detail;
+            
+            isIncomingSync = true;
+            plyrPlayer.source = {
+                type: 'video',
+                sources: [
+                    {
+                        src: videoData.videoUrl,
+                        type: 'video/mp4'
+                    }
+                ]
+            };
+            
+            videoDropzone.classList.add('hidden');
+            videoPlayerWrapper.classList.remove('hidden');
+            
+            plyrPlayer.play().catch(err => console.log("Autoplay failed/blocked:", err));
+            
+            // Brief timeout to let Plyr process source loading before clearing flag
+            setTimeout(() => {
+                isIncomingSync = false;
+            }, 200);
+
+            addNotification(`${videoData.sender} shared: "${videoData.fileName}" (Syncing Preview)`);
         });
-    });
-}
 
-function syncThemeButtons(theme) {
-    document.querySelectorAll('.mood-btn').forEach(b => {
-        b.classList.toggle('active', b.dataset.theme === theme);
-    });
-}
+        window.addEventListener('together_video_action', (e) => {
+            const actionData = e.detail;
+            
+            isIncomingSync = true;
+            if (actionData.action === 'play') {
+                plyrPlayer.currentTime = actionData.time;
+                plyrPlayer.play().catch(err => {});
+            } else if (actionData.action === 'pause') {
+                plyrPlayer.currentTime = actionData.time;
+                plyrPlayer.pause();
+            } else if (actionData.action === 'seek') {
+                plyrPlayer.currentTime = actionData.time;
+            } else if (actionData.action === 'unload') {
+                unloadVideo();
+                addNotification(`${actionData.sender} removed the active video.`);
+            }
+            
+            // Hold flag to prevent local feedback loops
+            setTimeout(() => {
+                isIncomingSync = false;
+            }, 200);
+        });
+    }
 
-function applyTheme(theme, broadcast) {
-    document.body.setAttribute('data-theme', theme === 'rose' ? '' : theme);
-    if (broadcast) peerSend('theme', { theme });
-}
+    // ==========================================
+    // --- Theme & Romantic Backdrop Synchronization ---
+    // ==========================================
+    function startThemeSync(code) {
+        const themeKey = `together_theme_${code}`;
+        const themeBtns = document.querySelectorAll('.btn-theme');
+        
+        function applyTheme(themeName) {
+            document.body.classList.remove('theme-burgundy', 'theme-midnight', 'theme-sunset', 'theme-rosegold');
+            document.body.classList.add(`theme-${themeName}`);
+            
+            themeBtns.forEach(btn => {
+                if (btn.dataset.theme === themeName) {
+                    btn.classList.add('active');
+                } else {
+                    btn.classList.remove('active');
+                }
+            });
+        }
+        
+        // Initial Theme Load
+        const currentTheme = localStorage.getItem(themeKey) || 'burgundy';
+        applyTheme(currentTheme);
+        
+        // Click Listeners
+        themeBtns.forEach(btn => {
+            btn.addEventListener('click', () => {
+                const selectedTheme = btn.dataset.theme;
+                localStorage.setItem(themeKey, selectedTheme);
+                applyTheme(selectedTheme);
+                addNotification(`Backdrop set to ${btn.textContent}`);
+                
+                // Broadcast theme change
+                broadcastSyncEvent('theme', {
+                    themeName: selectedTheme,
+                    sender: currentUserName,
+                    timestamp: Date.now()
+                });
+            });
+        });
 
-// ══════════════════════════════════════════
-//  LEAVE
-// ══════════════════════════════════════════
-function initLeaveBtn() {
-    btnLeaveSpace.addEventListener('click', () => {
-        peerSend('disconnect', {});
-        if (peer) { try { peer.destroy(); } catch(e) {} }
-        location.reload();
-    });
-}
+        // Listen for incoming theme events
+        window.addEventListener('together_theme_updated', (e) => {
+            applyTheme(e.detail.themeName);
+        });
+    }
 
-// ══════════════════════════════════════════
-//  VIDEO DROPZONE
-// ══════════════════════════════════════════
-function initVideoDropzone() {
-    videoDropzone.addEventListener('dragover', (e) => {
-        e.preventDefault(); videoDropzone.classList.add('drag-over');
-    });
-    videoDropzone.addEventListener('dragleave', () => videoDropzone.classList.remove('drag-over'));
-    videoDropzone.addEventListener('drop', (e) => {
-        e.preventDefault(); videoDropzone.classList.remove('drag-over');
-        const file = e.dataTransfer.files[0];
-        if (file && file.type.startsWith('video/')) loadLocalVideo(file);
-    });
-    btnSelectVideo.addEventListener('click', (e) => { e.stopPropagation(); videoFileInput.click(); });
-    videoDropzone.addEventListener('click', () => videoFileInput.click());
-    videoFileInput.addEventListener('change', (e) => {
-        if (e.target.files[0]) loadLocalVideo(e.target.files[0]);
-    });
-    btnChangeVideo?.addEventListener('click', () => 
+    // ==========================================
+    // --- Heart Burst Double Tap Synchronization ---
+    // ==========================================
+    function startHeartSync(code) {
+        function spawnHeartsLocal() {
+            const container = document.getElementById('videoPlayerWrapper');
+            if (!container || container.classList.contains('hidden')) return;
+            
+            for (let i = 0; i < 6; i++) {
+                setTimeout(() => {
+                    const heart = document.createElement('div');
+                    heart.className = 'floating-heart';
+                    heart.textContent = '❤️';
+                    
+                    const randomLeft = Math.floor(Math.random() * 80) + 10;
+                    heart.style.left = `${randomLeft}%`;
+                    heart.style.bottom = '10px';
+                    
+                    const size = (Math.random() * 0.8 + 0.8).toFixed(1);
+                    heart.style.fontSize = `${size}rem`;
+                    
+                    const duration = (Math.random() * 1.5 + 2).toFixed(1);
+                    heart.style.animationDuration = `${duration}s`;
+                    
+                    container.appendChild(heart);
+                    
+                    setTimeout(() => heart.remove(), parseFloat(duration) * 1000);
+                }, i * 200);
+            }
+        }
+        
+        let lastTap = 0;
+        videoPlayerWrapper.addEventListener('click', (e) => {
+            if (e.target.closest('#btnChangeVideo') || e.target.closest('.plyr__controls') || e.target.closest('.plyr__control')) return;
+            
+            const now = Date.now();
+            if (now - lastTap < 300) {
+                // Broadcast heart trigger
+                broadcastSyncEvent('heart', {
+                    sender: currentUserName,
+                    timestamp: Date.now()
+                });
+                spawnHeartsLocal();
+            }
+            lastTap = now;
+        });
+
+        videoPlayerWrapper.addEventListener('touchstart', (e) => {
+            if (e.target.closest('#btnChangeVideo') || e.target.closest('.plyr__controls') || e.target.closest('.plyr__control')) return;
+            
+            const now = Date.now();
+            if (now - lastTap < 300) {
+                // Broadcast heart trigger
+                broadcastSyncEvent('heart', {
+                    sender: currentUserName,
+                    timestamp: Date.now()
+                });
+                spawnHeartsLocal();
+            }
+            lastTap = now;
+        });
+        
+        window.addEventListener('together_heart_triggered', () => {
+            spawnHeartsLocal();
+        });
+    }
+
+    // ==========================================
+    // --- Leave Space Overlay Countdown Sequence ---
+    // ==========================================
+    function startLeaveSpaceAction(code) {
+        let leaveInterval = null;
+        const btnLeaveSpace = document.getElementById('btnLeaveSpace');
+        const leaveOverlay = document.getElementById('leaveOverlay');
+        const leaveTimeSummary = document.getElementById('leaveTimeSummary');
+        const leaveCountdownDisplay = document.getElementById('leaveCountdownDisplay');
+        const btnCancelLeave = document.getElementById('btnCancelLeave');
+        const btnConfirmLeaveNow = document.getElementById('btnConfirmLeaveNow');
+
+        if (btnLeaveSpace) {
+            btnLeaveSpace.addEventListener('click', () => {
+                leaveOverlay.classList.remove('hidden');
+                leaveOverlay.classList.add('active');
+                
+                const startKey = `together_connection_start_${code}`;
+                const startTimeStr = localStorage.getItem(startKey);
+                let elapsedSecs = 0;
+                
+                if (startTimeStr) {
+                    const startTime = parseInt(startTimeStr);
+                    elapsedSecs = Math.max(0, Math.floor((Date.now() - startTime) / 1000));
+                }
+                
+                const mins = Math.floor(elapsedSecs / 60);
+                const secs = elapsedSecs % 60;
+                
+                let timeStr = "";
+                if (mins > 0) {
+                    timeStr = `${mins} minute${mins > 1 ? 's' : ''} and ${secs} second${secs !== 1 ? 's' : ''}`;
+                } else {
+                    timeStr = `${secs} second${secs !== 1 ? 's' : ''}`;
+                }
+                
+                leaveTimeSummary.innerHTML = `You shared <span style="color: var(--primary); font-weight: 500;">${timeStr}</span> of beautiful moments together. ❤️`;
+                
+                let countdown = 5;
+                leaveCountdownDisplay.textContent = countdown;
+                
+                if (leaveInterval) clearInterval(leaveInterval);
+                leaveInterval = setInterval(() => {
+                    countdown--;
+                    leaveCountdownDisplay.textContent = countdown;
+                    if (countdown <= 0) {
+                        clearInterval(leaveInterval);
+                        executeLeave();
+                    }
+                }, 1000);
+            });
+        }
+
+        if (btnCancelLeave) {
+            btnCancelLeave.addEventListener('click', () => {
+                if (leaveInterval) clearInterval(leaveInterval);
+                leaveOverlay.classList.remove('active');
+                leaveOverlay.classList.add('hidden');
+            });
+        }
+
+        if (btnConfirmLeaveNow) {
+            btnConfirmLeaveNow.addEventListener('click', () => {
+                if (leaveInterval) clearInterval(leaveInterval);
+                executeLeave();
+            });
+        }
+
+        function executeLeave() {
+            // Broadcast leave
+            broadcastSyncEvent('presence', {
+                action: 'leave',
+                sender: currentUserName,
+                timestamp: Date.now()
+            });
+
+            const roomKey = `together_room_${code}`;
+            const startKey = `together_connection_start_${code}`;
+            
+            // Clear current session
+            localStorage.removeItem('together_session_code');
+            localStorage.removeItem('together_session_name');
+            localStorage.removeItem('together_session_is_creator');
+
+            let roomData = null;
+            try {
+                roomData = JSON.parse(localStorage.getItem(roomKey));
+            } catch(e) {}
+            
+            if (roomData) {
+                if (roomData.creator && roomData.creator.toLowerCase() === currentUserName.toLowerCase()) {
+                    roomData.creator = null;
+                } else if (roomData.partner && roomData.partner.toLowerCase() === currentUserName.toLowerCase()) {
+                    roomData.partner = null;
+                }
+                
+                if (!roomData.creator && !roomData.partner) {
+                    localStorage.removeItem(roomKey);
+                    localStorage.removeItem(startKey);
+                    localStorage.removeItem(`together_timer_${code}`);
+                    localStorage.removeItem(`together_video_${code}`);
+                    localStorage.removeItem(`together_video_action_${code}`);
+                    localStorage.removeItem(`together_share_permission_${code}`);
+                    localStorage.removeItem(`together_theme_${code}`);
+                    localStorage.removeItem(`together_chat_${code}`);
+                } else {
+                    localStorage.setItem(roomKey, JSON.stringify(roomData));
+                }
+            }
+
+            if (mqttClient) {
+                mqttClient.end();
+            }
+            
+            window.location.reload();
+        }
+    }
+
+    // ==========================================
+    // --- Helper Utilities ---
+    // ==========================================
+    function addNotification(msg) {
+        const toast = document.createElement('div');
+        toast.style.position = 'fixed';
+        toast.style.bottom = '30px';
+        toast.style.right = '30px';
+        toast.style.background = 'var(--primary)';
+        toast.style.color = 'white';
+        toast.style.padding = '12px 24px';
+        toast.style.borderRadius = '30px';
+        toast.style.zIndex = '99999';
+        toast.style.boxShadow = '0 8px 30px rgba(224, 47, 108, 0.4)';
+        toast.style.fontFamily = 'var(--font-body)';
+        toast.style.fontSize = '0.9rem';
+        toast.style.fontWeight = '500';
+        toast.innerText = msg;
+        
+        document.body.appendChild(toast);
+        
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateY(10px)';
+        toast.style.transition = 'all 0.3s cubic-bezier(0.165, 0.84, 0.44, 1)';
+        
+        setTimeout(() => {
+            toast.style.opacity = '1';
+            toast.style.transform = 'translateY(0)';
+        }, 50);
+
+        setTimeout(() => {
+            toast.style.opacity = '0';
+            toast.style.transform = 'translateY(10px)';
+        }, 2700);
+        
+        setTimeout(() => toast.remove(), 3000);
+    }
+});
