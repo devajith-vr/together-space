@@ -217,11 +217,11 @@ input:focus, select:focus { border-color: var(--primary); background: rgba(216, 
 
 /* Fullscreen Overlay Controls (Rotate & Brightness) */
 .fullscreen-overlay-controls {
+    display: none !important; /* Hidden by default in windowed mode */
     position: absolute;
     bottom: 80px; /* Position it above the Plyr controls bar */
     left: 20px;
     right: 20px;
-    display: none; /* Hidden by default */
     justify-content: space-between;
     align-items: center;
     z-index: 99;
@@ -229,9 +229,11 @@ input:focus, select:focus { border-color: var(--primary); background: rgba(216, 
 }
 
 /* Enable controls inside fullscreen or when rotated */
-body.plyr-fullscreen-active .fullscreen-overlay-controls,
+:fullscreen .fullscreen-overlay-controls,
+:-webkit-full-screen .fullscreen-overlay-controls,
+.plyr--fullscreen-active .fullscreen-overlay-controls,
 .player-wrapper.rotated-landscape .fullscreen-overlay-controls {
-    display: flex;
+    display: flex !important;
 }
 
 .brightness-control-wrapper {
