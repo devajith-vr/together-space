@@ -148,7 +148,7 @@
                         <div class="dropzone-content">
                             <svg class="icon-large mb-4 pulse" viewBox="0 0 24 24" fill="none" stroke="var(--primary)" stroke-width="1.2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
                             <h4 class="elegant-title mb-2">Watch a Video from Gallery</h4>
-                            <p class="subtitle mb-4">Drag and drop any video here or click to select from your device gallery.</p>
+                            <p class="subtitle mb-4" id="dropzonePromptText">Drag and drop any video here or click to select from your device gallery.</p>
                             <button class="btn primary btn-sm" id="btnSelectVideo">Choose Local File</button>
                             <input type="file" id="videoFileInput" accept="video/*" style="position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; opacity: 0; pointer-events: none;">
                         </div>
@@ -173,19 +173,7 @@
                         Change Video
                     </button>
 
-                    <!-- Fullscreen Overlay Controls (Rotate & Brightness) -->
-                    <div class="fullscreen-overlay-controls">
-                        <!-- Brightness control slider -->
-                        <div class="brightness-control-wrapper">
-                            <span class="brightness-icon">☀️</span>
-                            <input type="range" id="videoBrightnessControl" min="0.5" max="1.5" step="0.05" value="1.0" title="Adjust Brightness">
-                        </div>
-                        
-                        <!-- Rotate button (Mobile Fullscreen Only) -->
-                        <button class="btn btn-sm btn-rotate" id="btnRotateVideo" title="Rotate Video">
-                            🔄 Rotate
-                        </button>
-                    </div>
+
                 </div>
             </section>
 
