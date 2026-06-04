@@ -22,6 +22,10 @@ document.addEventListener('DOMContentLoaded', () => {
     let localStream = null;
     let remoteStream = null;
     let remoteCandidatesQueue = [];
+    let currentSessionId = null;
+    let globalAudioCtx = null;
+    let globalAudioSource = null;
+    let globalAudioDest = null;
 
     // Real-time Sync State
     let mqttClient = null;
@@ -542,7 +546,11 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         
         else if (event.type === 'webrtc_signal') {
-            handleWebRTCSignal(event);
+            if (event.sessionId === currentSessionId) {
+                handleWebRTCSignal(event);
+            } else {
+                console.log("Ignored WebRTC signal from old session:", event.sessionId, "expected:", currentSessionId);
+            }
         }
     }
 
@@ -1146,6 +1154,10 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         remoteCandidatesQueue = [];
 
+        // Generate new session ID for this video
+        const sessionId = Math.random().toString(36).substring(2, 10);
+        currentSessionId = sessionId;
+
         // Re-initialize Plyr for local gallery playback
         reinitPlyr();
 
@@ -1205,6 +1217,7 @@ document.addEventListener('DOMContentLoaded', () => {
             // Broadcast load event
             broadcastSyncEvent('video_load', {
                 fileName: file.name,
+                sessionId: sessionId,
                 sender: currentUserName,
                 timestamp: Date.now()
             });
@@ -1330,7 +1343,7 @@ document.addEventListener('DOMContentLoaded', () => {
             try {
                 ctx.fillStyle = "#000000";
                 ctx.fillRect(0, 0, canvas.width, canvas.height);
-                if (video.videoWidth) {
+                if (video.videoWidth > 0 && video.videoHeight > 0) {
                     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
                 }
             } catch(e) {
@@ -1343,7 +1356,27 @@ document.addEventListener('DOMContentLoaded', () => {
                     animId = null;
                     return;
                 }
-                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                
+                if (video.videoWidth > 0 && video.videoHeight > 0) {
+                    try {
+                        const targetW = video.videoWidth;
+                        const targetH = video.videoHeight;
+                        let w = targetW;
+                        let h = targetH;
+                        if (w > maxDimension) {
+                            const ratio = maxDimension / w;
+                            w = maxDimension;
+                            h = Math.floor(h * ratio);
+                        }
+                        if (canvas.width !== w || canvas.height !== h) {
+                            canvas.width = w;
+                            canvas.height = h;
+                        }
+                        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                    } catch(e) {
+                        console.warn("Canvas drawImage failed inside loop:", e);
+                    }
+                }
                 animId = requestAnimationFrame(draw);
             }
             
@@ -1371,23 +1404,26 @@ document.addEventListener('DOMContentLoaded', () => {
             if (videoTrack) tracks.push(videoTrack);
             
             try {
-                const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-                const source = audioCtx.createMediaElementSource(video);
-                const dest = audioCtx.createMediaStreamDestination();
-                source.connect(dest);
-                source.connect(audioCtx.destination);
+                // Reuse global AudioContext and nodes to bypass InvalidStateError on multiple connections
+                if (!globalAudioCtx) {
+                    globalAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                    globalAudioSource = globalAudioCtx.createMediaElementSource(video);
+                    globalAudioDest = globalAudioCtx.createMediaStreamDestination();
+                    globalAudioSource.connect(globalAudioDest);
+                    globalAudioSource.connect(globalAudioCtx.destination);
+                }
                 
-                const audioTrack = dest.stream.getAudioTracks()[0];
+                const audioTrack = globalAudioDest.stream.getAudioTracks()[0];
                 if (audioTrack) tracks.push(audioTrack);
                 
-                video._audioCtx = audioCtx;
+                video._audioCtx = globalAudioCtx;
 
                 // Resume AudioContext if it is suspended (iOS restriction fallback)
-                if (audioCtx.state === 'suspended') {
+                if (globalAudioCtx.state === 'suspended') {
                     const resumeCtx = () => {
-                        if (video._audioCtx && video._audioCtx.state === 'suspended') {
-                            video._audioCtx.resume().then(() => {
-                                console.log("AudioContext resumed on user gesture.");
+                        if (globalAudioCtx && globalAudioCtx.state === 'suspended') {
+                            globalAudioCtx.resume().then(() => {
+                                console.log("Global AudioContext resumed on user gesture.");
                             }).catch(err => console.error("Gesture resume failed:", err));
                         }
                         document.removeEventListener('click', resumeCtx);
@@ -1397,16 +1433,13 @@ document.addEventListener('DOMContentLoaded', () => {
                     document.addEventListener('touchstart', resumeCtx);
                 }
             } catch(e) {
-                console.warn("Web Audio capture failed:", e);
+                console.warn("Web Audio capture failed/reused:", e);
             }
             
             stream = new MediaStream(tracks);
             stream._cleanup = () => {
                 if (animId) cancelAnimationFrame(animId);
-                if (video._audioCtx) {
-                    try { video._audioCtx.close(); } catch(err) {}
-                    video._audioCtx = null;
-                }
+                // Do not close globalAudioCtx to allow reuse for subsequent videos
             };
         }
         return stream;
@@ -1452,14 +1485,15 @@ document.addEventListener('DOMContentLoaded', () => {
             if (event.candidate && currentRoomCode) {
                 broadcastSyncEvent('webrtc_signal', {
                     candidate: event.candidate.toJSON(), // Serialize candidate clean JSON
+                    sessionId: currentSessionId, // Match signaling to this specific session
                     sender: currentUserName
                 });
             }
         };
 
         // Resume AudioContext if we are in iOS Safari gesture callback
-        if (mainVideo._audioCtx && mainVideo._audioCtx.state === 'suspended') {
-            mainVideo._audioCtx.resume().catch(e => console.log(e));
+        if (globalAudioCtx && globalAudioCtx.state === 'suspended') {
+            globalAudioCtx.resume().catch(e => console.log(e));
         }
 
         localStream = captureMediaStream(mainVideo);
@@ -1478,6 +1512,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 
                 broadcastSyncEvent('webrtc_signal', {
                     sdp: { type: offer.type, sdp: offer.sdp }, // Clean serialization
+                    sessionId: currentSessionId,
                     sender: currentUserName
                 });
             } catch(e) {
@@ -1546,6 +1581,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (event.candidate && currentRoomCode) {
                 broadcastSyncEvent('webrtc_signal', {
                     candidate: event.candidate.toJSON(), // Serialize candidate clean JSON
+                    sessionId: currentSessionId,
                     sender: currentUserName
                 });
             }
@@ -1610,6 +1646,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     await peerConnection.setLocalDescription(answer);
                     broadcastSyncEvent('webrtc_signal', {
                         sdp: { type: answer.type, sdp: answer.sdp }, // Clean serialization
+                        sessionId: currentSessionId,
                         sender: currentUserName
                     });
                 } else if (desc.type === 'answer') {
@@ -1654,6 +1691,7 @@ document.addEventListener('DOMContentLoaded', () => {
             broadcastSyncEvent('video_action', {
                 action: action,
                 time: time,
+                sessionId: currentSessionId,
                 sender: currentUserName,
                 timestamp: Date.now()
             });
@@ -1673,6 +1711,7 @@ document.addEventListener('DOMContentLoaded', () => {
         window.addEventListener('together_video_load', (e) => {
             const videoData = e.detail;
             
+            currentSessionId = videoData.sessionId;
             unloadVideo();
             // We wait for the SDP offer to arrive to create the peer connection
             
@@ -1682,6 +1721,11 @@ document.addEventListener('DOMContentLoaded', () => {
         window.addEventListener('together_video_action', (e) => {
             const actionData = e.detail;
             
+            if (actionData.sessionId !== currentSessionId) {
+                console.log("Ignored video action from different session:", actionData.sessionId);
+                return;
+            }
+
             // If we are playing a remote WebRTC stream, B's player is just a viewer. B's player doesn't seek.
             if (mainVideo.srcObject) {
                 if (actionData.action === 'play') {
