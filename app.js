@@ -10,6 +10,10 @@ document.addEventListener('DOMContentLoaded', () => {
     let isCreator = false;
     let timerTickInterval = null;
     let currentLoadedFileName = null;
+    let peerConnection = null;
+    let localStream = null;
+    let remoteStream = null;
+    let remoteCandidatesQueue = [];
 
     // Real-time Sync State
     let mqttClient = null;
@@ -425,6 +429,10 @@ document.addEventListener('DOMContentLoaded', () => {
                         timestamp: Date.now()
                     });
                 }
+                // Host streams video to partner who just joined
+                if (currentLoadedFileName && !mainVideo.srcObject) {
+                    initiateWebRTCStream();
+                }
             } else if (event.action === 'sync_names') {
                 roomData.creator = event.creator;
                 roomData.partner = event.partner;
@@ -435,6 +443,10 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (!localStart || parseInt(event.connectionStartTime) < parseInt(localStart)) {
                         localStorage.setItem(`together_connection_start_${code}`, event.connectionStartTime);
                     }
+                }
+                // Host checks if partner needs stream
+                if (currentLoadedFileName && !mainVideo.srcObject && !peerConnection) {
+                    initiateWebRTCStream();
                 }
             } else if (event.action === 'leave') {
                 // Clear session immediately so that if the user closes the tab right now, they won't auto-login next time
@@ -489,6 +501,10 @@ document.addEventListener('DOMContentLoaded', () => {
         
         else if (event.type === 'heart') {
             window.dispatchEvent(new CustomEvent('together_heart_triggered'));
+        }
+        
+        else if (event.type === 'webrtc_signal') {
+            handleWebRTCSignal(event);
         }
     }
 
@@ -1068,6 +1084,25 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
+        // Reset previous WebRTC streams
+        if (mainVideo.srcObject) {
+            try { mainVideo.srcObject.getTracks().forEach(t => t.stop()); } catch(e) {}
+            mainVideo.srcObject = null;
+        }
+        if (localStream) {
+            try { localStream.getTracks().forEach(t => t.stop()); } catch(e) {}
+            localStream = null;
+        }
+        if (remoteStream) {
+            try { remoteStream.getTracks().forEach(t => t.stop()); } catch(e) {}
+            remoteStream = null;
+        }
+        if (peerConnection) {
+            try { peerConnection.close(); } catch(e) {}
+            peerConnection = null;
+        }
+        remoteCandidatesQueue = [];
+
         const fileUrl = URL.createObjectURL(file);
         currentLoadedFileName = file.name;
         
@@ -1096,6 +1131,24 @@ document.addEventListener('DOMContentLoaded', () => {
         
         addNotification(`Shared video: ${file.name}`);
 
+        // Wait for active playback to capture tracks and negotiate peer connection
+        let initiated = false;
+        const triggerInitiate = () => {
+            if (initiated) return;
+            initiated = true;
+            mainVideo.removeEventListener('playing', triggerInitiate);
+            mainVideo.removeEventListener('play', triggerInitiate);
+            mainVideo.removeEventListener('loadedmetadata', triggerInitiate);
+            
+            // Short delay to ensure tracks are fully initialized by the browser
+            setTimeout(() => {
+                initiateWebRTCStream();
+            }, 300);
+        };
+        mainVideo.addEventListener('playing', triggerInitiate);
+        mainVideo.addEventListener('play', triggerInitiate);
+        mainVideo.addEventListener('loadedmetadata', triggerInitiate);
+
         if (triggerBroadcast && currentRoomCode) {
             // Broadcast load event
             broadcastSyncEvent('video_load', {
@@ -1121,9 +1174,38 @@ document.addEventListener('DOMContentLoaded', () => {
             mainVideo.pause();
             mainVideo.src = "";
         }
+
+        if (mainVideo.srcObject) {
+            try {
+                mainVideo.srcObject.getTracks().forEach(track => track.stop());
+            } catch(e) {}
+            mainVideo.srcObject = null;
+        }
+        if (localStream) {
+            try {
+                localStream.getTracks().forEach(track => track.stop());
+            } catch(e) {}
+            localStream = null;
+        }
+        if (remoteStream) {
+            try {
+                remoteStream.getTracks().forEach(track => track.stop());
+            } catch(e) {}
+            remoteStream = null;
+        }
+        if (peerConnection) {
+            try { peerConnection.close(); } catch(e) {}
+            peerConnection = null;
+        }
+        remoteCandidatesQueue = [];
+        
         currentLoadedFileName = null;
 
-        videoPlayerWrapper.classList.add('hidden');
+        const playerWrapper = document.getElementById('videoPlayerWrapper');
+        if (playerWrapper) {
+            playerWrapper.classList.remove('plyr-is-receiver');
+            playerWrapper.classList.add('hidden');
+        }
         
         const theatreDropzoneWrapper = document.querySelector('.theatre-dropzone-wrapper');
         if (theatreDropzoneWrapper) theatreDropzoneWrapper.classList.remove('hidden');
@@ -1135,6 +1217,203 @@ document.addEventListener('DOMContentLoaded', () => {
         
         videoDropzone.classList.remove('hidden');
         videoFileInput.value = "";
+    }
+
+    // ==========================================
+    // --- Serverless WebRTC Streaming via MQTT ---
+    // ==========================================
+    async function initiateWebRTCStream() {
+        if (peerConnection) {
+            try { peerConnection.close(); } catch(e) {}
+        }
+        remoteCandidatesQueue = [];
+        
+        peerConnection = new RTCPeerConnection({
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' }
+            ]
+        });
+        
+        peerConnection.onicecandidate = (event) => {
+            if (event.candidate && currentRoomCode) {
+                broadcastSyncEvent('webrtc_signal', {
+                    candidate: event.candidate,
+                    sender: currentUserName
+                });
+            }
+        };
+
+        if (mainVideo.captureStream) {
+            localStream = mainVideo.captureStream();
+        } else if (mainVideo.mozCaptureStream) {
+            localStream = mainVideo.mozCaptureStream();
+        } else {
+            console.warn("captureStream not supported in this browser");
+            return;
+        }
+
+        async function sendSDPOffer() {
+            try {
+                const offer = await peerConnection.createOffer({
+                    offerToReceiveAudio: false,
+                    offerToReceiveVideo: false
+                });
+                await peerConnection.setLocalDescription(offer);
+                
+                broadcastSyncEvent('webrtc_signal', {
+                    sdp: offer,
+                    sender: currentUserName
+                });
+            } catch(e) {
+                console.error("Error initiating stream offer:", e);
+            }
+        }
+
+        let tracks = localStream.getTracks();
+        if (tracks.length === 0) {
+            console.warn("localStream has 0 tracks initially. Waiting for tracks to initialize...");
+            let attempts = 0;
+            const checkInterval = setInterval(() => {
+                attempts++;
+                tracks = localStream.getTracks();
+                if (tracks.length > 0) {
+                    clearInterval(checkInterval);
+                    tracks.forEach(track => {
+                        peerConnection.addTrack(track, localStream);
+                    });
+                    sendSDPOffer();
+                } else if (attempts >= 15) {
+                    clearInterval(checkInterval);
+                    console.error("Failed to capture any tracks from video after 3 seconds.");
+                }
+            }, 200);
+        } else {
+            tracks.forEach(track => {
+                peerConnection.addTrack(track, localStream);
+            });
+            sendSDPOffer();
+        }
+    }
+
+    function createReceiverPeerConnection() {
+        if (peerConnection) {
+            try { peerConnection.close(); } catch(e) {}
+        }
+        remoteCandidatesQueue = [];
+        
+        peerConnection = new RTCPeerConnection({
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' }
+            ]
+        });
+        
+        peerConnection.onicecandidate = (event) => {
+            if (event.candidate && currentRoomCode) {
+                broadcastSyncEvent('webrtc_signal', {
+                    candidate: event.candidate,
+                    sender: currentUserName
+                });
+            }
+        };
+        
+        peerConnection.ontrack = (event) => {
+            console.log("Remote track received:", event.track.kind);
+            
+            if (!remoteStream) {
+                remoteStream = new MediaStream();
+            }
+            
+            if (!remoteStream.getTracks().find(t => t.id === event.track.id)) {
+                remoteStream.addTrack(event.track);
+            }
+            
+            const theatreDropzoneWrapper = document.querySelector('.theatre-dropzone-wrapper');
+            if (theatreDropzoneWrapper) theatreDropzoneWrapper.classList.add('hidden');
+            
+            videoPlayerWrapper.classList.remove('hidden');
+            
+            const playerWrapper = document.getElementById('videoPlayerWrapper');
+            if (playerWrapper) {
+                playerWrapper.classList.add('plyr-is-receiver');
+            }
+            
+            if (mainVideo.srcObject !== remoteStream) {
+                mainVideo.srcObject = remoteStream;
+            }
+            
+            mainVideo.muted = false;
+            
+            if (plyrPlayer) {
+                plyrPlayer.muted = false;
+                plyrPlayer.play().catch(err => {
+                    console.log("Plyr stream play blocked:", err);
+                    addNotification("Tap anywhere to enable audio and watch together!");
+                    const playOnGesture = () => {
+                        plyrPlayer.play();
+                        document.removeEventListener('click', playOnGesture);
+                        document.removeEventListener('touchstart', playOnGesture);
+                    };
+                    document.addEventListener('click', playOnGesture);
+                    document.addEventListener('touchstart', playOnGesture);
+                });
+            } else {
+                mainVideo.play().catch(err => {
+                    console.log("Stream play blocked:", err);
+                    addNotification("Tap anywhere to watch together!");
+                    const playOnGesture = () => {
+                        mainVideo.play();
+                        document.removeEventListener('click', playOnGesture);
+                        document.removeEventListener('touchstart', playOnGesture);
+                    };
+                    document.addEventListener('click', playOnGesture);
+                    document.addEventListener('touchstart', playOnGesture);
+                });
+            }
+        };
+    }
+
+    async function handleWebRTCSignal(signal) {
+        if (signal.sender === currentUserName) return;
+
+        if (!peerConnection) {
+            createReceiverPeerConnection();
+        }
+        
+        try {
+            if (signal.sdp) {
+                const desc = new RTCSessionDescription(signal.sdp);
+                await peerConnection.setRemoteDescription(desc);
+                
+                if (desc.type === 'offer') {
+                    const answer = await peerConnection.createAnswer();
+                    await peerConnection.setLocalDescription(answer);
+                    broadcastSyncEvent('webrtc_signal', {
+                        sdp: answer,
+                        sender: currentUserName
+                    });
+                }
+                
+                while (remoteCandidatesQueue.length > 0) {
+                    const candidateData = remoteCandidatesQueue.shift();
+                    try {
+                        await peerConnection.addIceCandidate(candidateData);
+                    } catch (err) {
+                        console.error("Error adding queued remote candidate:", err);
+                    }
+                }
+            } else if (signal.candidate) {
+                const candidate = new RTCIceCandidate(signal.candidate);
+                if (peerConnection.remoteDescription && peerConnection.remoteDescription.type) {
+                    await peerConnection.addIceCandidate(candidate);
+                } else {
+                    remoteCandidatesQueue.push(candidate);
+                }
+            }
+        } catch (e) {
+            console.error("WebRTC signaling error:", e);
+        }
     }
 
     // Shared Video Sync (Sync play/pause/seeks and Takeover)
@@ -1171,26 +1450,25 @@ document.addEventListener('DOMContentLoaded', () => {
         window.addEventListener('together_video_load', (e) => {
             const videoData = e.detail;
             
-            if (currentLoadedFileName === videoData.fileName) {
-                const theatreDropzoneWrapper = document.querySelector('.theatre-dropzone-wrapper');
-                if (theatreDropzoneWrapper) theatreDropzoneWrapper.classList.add('hidden');
-                videoPlayerWrapper.classList.remove('hidden');
-                return;
-            }
-
             unloadVideo();
-            
-            const dropzonePromptText = document.getElementById('dropzonePromptText');
-            if (dropzonePromptText) {
-                dropzonePromptText.innerHTML = `${videoData.sender} shared: <strong style="color: var(--primary);">${videoData.fileName}</strong>.<br>Please select the same video file from your device to watch together!`;
-            }
-            
-            addNotification(`${videoData.sender || 'Partner'} shared a video: "${videoData.fileName}"`);
+            addNotification(`${videoData.sender || 'Partner'} shared: "${videoData.fileName}". Connecting live stream...`);
         });
 
         window.addEventListener('together_video_action', (e) => {
             const actionData = e.detail;
             
+            // If we are playing a remote WebRTC stream, B's player is just a viewer. B's player doesn't seek.
+            if (mainVideo.srcObject) {
+                if (actionData.action === 'play') {
+                    mainVideo.play().catch(err => {});
+                } else if (actionData.action === 'pause') {
+                    mainVideo.pause();
+                } else if (actionData.action === 'unload') {
+                    unloadVideo();
+                }
+                return;
+            }
+
             if (actionData.action === 'play') {
                 if (plyrPlayer) {
                     if (Math.abs(plyrPlayer.currentTime - actionData.time) > 1.5) {
