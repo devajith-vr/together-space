@@ -5,6 +5,14 @@
 
 document.addEventListener('DOMContentLoaded', () => {
 
+    // Global Error Listeners for Visual Debugging
+    window.addEventListener('error', (e) => {
+        addNotification(`Error: ${e.message} (${e.filename}:${e.lineno})`);
+    });
+    window.addEventListener('unhandledrejection', (e) => {
+        addNotification(`Promise Rejection: ${e.reason}`);
+    });
+
     let currentRoomCode = null;
     let currentUserName = null;
     let isCreator = false;
@@ -30,47 +38,71 @@ document.addEventListener('DOMContentLoaded', () => {
     let ignorePauseEvents = 0;
     let ignoreSeekEvents = 0;
 
-    // Safe Plyr / Native Video Initialization
-    if (typeof Plyr !== 'undefined') {
-        plyrPlayer = new Plyr('#mainVideo', {
-            controls: ['play-large', 'play', 'progress', 'current-time', 'mute', 'volume', 'fullscreen'],
-            seekTime: 10,
-            fullscreen: {
-                iosNative: false,
-                container: '#videoPlayerWrapper'
+    function destroyPlyr() {
+        if (plyrPlayer) {
+            try {
+                plyrPlayer.destroy();
+            } catch (e) {
+                console.error("Error destroying Plyr:", e);
             }
-        });
-
-        // Wire Plyr Event Listeners for Live Broadcast
-        plyrPlayer.on('play', () => {
-            if (ignorePlayEvents > 0) {
-                ignorePlayEvents--;
-                return;
-            }
-            broadcastVideoAction('play', plyrPlayer.currentTime);
-        });
-
-        plyrPlayer.on('pause', () => {
-            if (ignorePauseEvents > 0) {
-                ignorePauseEvents--;
-                return;
-            }
-            broadcastVideoAction('pause', plyrPlayer.currentTime);
-        });
-
-        plyrPlayer.on('seeked', () => {
-            if (ignoreSeekEvents > 0) {
-                ignoreSeekEvents--;
-                return;
-            }
-            broadcastVideoAction('seek', plyrPlayer.currentTime);
-        });
-    } else {
-        console.warn("Plyr JS library not found. Falling back to native HTML5 controls.");
+            plyrPlayer = null;
+        }
         if (mainVideo) {
-            mainVideo.controls = true; // Show native browser controls
+            mainVideo.controls = false;
+        }
+    }
 
+    function reinitPlyr() {
+        if (!plyrPlayer && typeof Plyr !== 'undefined') {
+            plyrPlayer = new Plyr('#mainVideo', {
+                controls: ['play-large', 'play', 'progress', 'current-time', 'mute', 'volume', 'fullscreen'],
+                seekTime: 10,
+                fullscreen: {
+                    iosNative: false,
+                    container: '#videoPlayerWrapper'
+                }
+            });
+
+            plyrPlayer.on('play', () => {
+                if (ignorePlayEvents > 0) {
+                    ignorePlayEvents--;
+                    return;
+                }
+                broadcastVideoAction('play', plyrPlayer.currentTime);
+            });
+
+            plyrPlayer.on('pause', () => {
+                if (ignorePauseEvents > 0) {
+                    ignorePauseEvents--;
+                    return;
+                }
+                broadcastVideoAction('pause', plyrPlayer.currentTime);
+            });
+
+            plyrPlayer.on('seeked', () => {
+                if (ignoreSeekEvents > 0) {
+                    ignoreSeekEvents--;
+                    return;
+                }
+                broadcastVideoAction('seek', plyrPlayer.currentTime);
+            });
+
+            plyrPlayer.on('enterfullscreen', () => {
+                document.body.classList.add('plyr-fullscreen-active');
+            });
+
+            plyrPlayer.on('exitfullscreen', () => {
+                document.body.classList.remove('plyr-fullscreen-active');
+            });
+        } else if (typeof Plyr === 'undefined' && mainVideo) {
+            mainVideo.controls = true;
+        }
+    }
+
+    function registerNativeControlsListeners() {
+        if (mainVideo) {
             mainVideo.addEventListener('play', () => {
+                if (plyrPlayer) return;
                 if (ignorePlayEvents > 0) {
                     ignorePlayEvents--;
                     return;
@@ -79,6 +111,7 @@ document.addEventListener('DOMContentLoaded', () => {
             });
 
             mainVideo.addEventListener('pause', () => {
+                if (plyrPlayer) return;
                 if (ignorePauseEvents > 0) {
                     ignorePauseEvents--;
                     return;
@@ -87,6 +120,7 @@ document.addEventListener('DOMContentLoaded', () => {
             });
 
             mainVideo.addEventListener('seeked', () => {
+                if (plyrPlayer) return;
                 if (ignoreSeekEvents > 0) {
                     ignoreSeekEvents--;
                     return;
@@ -95,6 +129,10 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         }
     }
+
+    // Initialize media controller
+    reinitPlyr();
+    registerNativeControlsListeners();
 
     // UI Screen References
     const loginScreen = document.getElementById('loginScreen');
@@ -1108,6 +1146,9 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         remoteCandidatesQueue = [];
 
+        // Re-initialize Plyr for local gallery playback
+        reinitPlyr();
+
         const fileUrl = URL.createObjectURL(file);
         currentLoadedFileName = file.name;
         
@@ -1144,15 +1185,21 @@ document.addEventListener('DOMContentLoaded', () => {
             mainVideo.removeEventListener('playing', triggerInitiate);
             mainVideo.removeEventListener('play', triggerInitiate);
             mainVideo.removeEventListener('loadedmetadata', triggerInitiate);
+            mainVideo.removeEventListener('loadeddata', triggerInitiate);
             
             // Short delay to ensure tracks are fully initialized by the browser
             setTimeout(() => {
                 initiateWebRTCStream();
-            }, 300);
+            }, 500);
         };
         mainVideo.addEventListener('playing', triggerInitiate);
         mainVideo.addEventListener('play', triggerInitiate);
         mainVideo.addEventListener('loadedmetadata', triggerInitiate);
+        mainVideo.addEventListener('loadeddata', triggerInitiate);
+
+        if (mainVideo.readyState >= 1) { // HAVE_METADATA or higher
+            triggerInitiate();
+        }
 
         if (triggerBroadcast && currentRoomCode) {
             // Broadcast load event
@@ -1239,17 +1286,56 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- Serverless WebRTC Streaming via MQTT ---
     // ==========================================
     function captureMediaStream(video) {
-        if (video.captureStream) {
-            return video.captureStream();
-        } else if (video.mozCaptureStream) {
-            return video.mozCaptureStream();
+        let stream = null;
+        let useFallback = false;
+
+        // Detect iOS (iPhone/iPad) and WebKit (Safari) to force Canvas + Web Audio fallback
+        const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || 
+                      (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+        const isSafari = /Safari/.test(navigator.userAgent) && !/Chrome/.test(navigator.userAgent);
+        
+        if (!isIOS && !isSafari && (video.captureStream || video.mozCaptureStream)) {
+            try {
+                const captureFn = video.captureStream || video.mozCaptureStream;
+                stream = captureFn.call(video);
+                console.log("Native captureStream successful. Tracks:", stream.getTracks().map(t => t.kind));
+            } catch (e) {
+                console.warn("Native captureStream failed, using canvas fallback:", e);
+                useFallback = true;
+            }
         } else {
-            console.log("Using Canvas + Web Audio API capture fallback for iOS/macOS Safari...");
+            useFallback = true;
+        }
+
+        if (useFallback) {
+            console.log("Using Canvas + Web Audio API capture fallback...");
             const canvas = document.createElement('canvas');
             const ctx = canvas.getContext('2d');
             
-            canvas.width = video.videoWidth || 640;
-            canvas.height = video.videoHeight || 360;
+            // Cap resolution for smooth encoding on mobile devices
+            const maxDimension = 854; // Cap at 480p width equivalent
+            let width = video.videoWidth || 640;
+            let height = video.videoHeight || 360;
+            
+            if (width > maxDimension) {
+                const ratio = maxDimension / width;
+                width = maxDimension;
+                height = Math.floor(height * ratio);
+            }
+            
+            canvas.width = width;
+            canvas.height = height;
+            
+            // Draw a black placeholder and immediate video frame to initialize the track
+            try {
+                ctx.fillStyle = "#000000";
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                if (video.videoWidth) {
+                    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                }
+            } catch(e) {
+                console.log("Initial canvas draw skipped:", e);
+            }
             
             let animId = null;
             function draw() {
@@ -1262,8 +1348,16 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             
             video.addEventListener('play', () => {
-                canvas.width = video.videoWidth || 640;
-                canvas.height = video.videoHeight || 360;
+                const w = video.videoWidth || 640;
+                const h = video.videoHeight || 360;
+                if (w > maxDimension) {
+                    const ratio = maxDimension / w;
+                    canvas.width = maxDimension;
+                    canvas.height = Math.floor(h * ratio);
+                } else {
+                    canvas.width = w;
+                    canvas.height = h;
+                }
                 if (!animId) draw();
             });
             
@@ -1287,11 +1381,26 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (audioTrack) tracks.push(audioTrack);
                 
                 video._audioCtx = audioCtx;
+
+                // Resume AudioContext if it is suspended (iOS restriction fallback)
+                if (audioCtx.state === 'suspended') {
+                    const resumeCtx = () => {
+                        if (video._audioCtx && video._audioCtx.state === 'suspended') {
+                            video._audioCtx.resume().then(() => {
+                                console.log("AudioContext resumed on user gesture.");
+                            }).catch(err => console.error("Gesture resume failed:", err));
+                        }
+                        document.removeEventListener('click', resumeCtx);
+                        document.removeEventListener('touchstart', resumeCtx);
+                    };
+                    document.addEventListener('click', resumeCtx);
+                    document.addEventListener('touchstart', resumeCtx);
+                }
             } catch(e) {
                 console.warn("Web Audio capture failed:", e);
             }
             
-            const stream = new MediaStream(tracks);
+            stream = new MediaStream(tracks);
             stream._cleanup = () => {
                 if (animId) cancelAnimationFrame(animId);
                 if (video._audioCtx) {
@@ -1299,8 +1408,8 @@ document.addEventListener('DOMContentLoaded', () => {
                     video._audioCtx = null;
                 }
             };
-            return stream;
         }
+        return stream;
     }
 
     async function initiateWebRTCStream() {
@@ -1316,18 +1425,33 @@ document.addEventListener('DOMContentLoaded', () => {
             } catch(e) {}
             localStream = null;
         }
+
+        remoteCandidatesQueue = []; // Clear queue on start of new connection
         
         peerConnection = new RTCPeerConnection({
             iceServers: [
                 { urls: 'stun:stun.l.google.com:19302' },
-                { urls: 'stun:stun1.l.google.com:19302' }
+                { urls: 'stun:stun1.l.google.com:19302' },
+                { urls: 'stun:stun2.l.google.com:19302' },
+                { urls: 'stun:stun3.l.google.com:19302' },
+                { urls: 'stun:stun4.l.google.com:19302' },
+                { urls: 'stun:stun.services.mozilla.com' }
             ]
         });
+
+        // Set up connection diagnostics
+        peerConnection.onconnectionstatechange = () => {
+            console.log("[WebRTC Sender] connectionState:", peerConnection.connectionState);
+            addNotification(`Connection State (Sender): ${peerConnection.connectionState}`);
+        };
+        peerConnection.oniceconnectionstatechange = () => {
+            console.log("[WebRTC Sender] iceConnectionState:", peerConnection.iceConnectionState);
+        };
         
         peerConnection.onicecandidate = (event) => {
             if (event.candidate && currentRoomCode) {
                 broadcastSyncEvent('webrtc_signal', {
-                    candidate: event.candidate,
+                    candidate: event.candidate.toJSON(), // Serialize candidate clean JSON
                     sender: currentUserName
                 });
             }
@@ -1353,11 +1477,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 await peerConnection.setLocalDescription(offer);
                 
                 broadcastSyncEvent('webrtc_signal', {
-                    sdp: offer,
+                    sdp: { type: offer.type, sdp: offer.sdp }, // Clean serialization
                     sender: currentUserName
                 });
             } catch(e) {
                 console.error("Error initiating stream offer:", e);
+                addNotification("Failed to start streaming video to partner!");
             }
         }
 
@@ -1377,6 +1502,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 } else if (attempts >= 15) {
                     clearInterval(checkInterval);
                     console.error("Failed to capture any tracks from video after 3 seconds.");
+                    addNotification("Cannot find video tracks to share!");
                 }
             }, 200);
         } else {
@@ -1391,19 +1517,35 @@ document.addEventListener('DOMContentLoaded', () => {
         if (peerConnection) {
             try { peerConnection.close(); } catch(e) {}
         }
-        // Keep remoteCandidatesQueue intact to preserve candidates that arrived early
+        remoteCandidatesQueue = []; // Clear queue on start of new connection
         
+        // Destroy Plyr so native HTML5 <video> player renders srcObject WebRTC stream properly
+        destroyPlyr();
+
         peerConnection = new RTCPeerConnection({
             iceServers: [
                 { urls: 'stun:stun.l.google.com:19302' },
-                { urls: 'stun:stun1.l.google.com:19302' }
+                { urls: 'stun:stun1.l.google.com:19302' },
+                { urls: 'stun:stun2.l.google.com:19302' },
+                { urls: 'stun:stun3.l.google.com:19302' },
+                { urls: 'stun:stun4.l.google.com:19302' },
+                { urls: 'stun:stun.services.mozilla.com' }
             ]
         });
+
+        // Set up connection diagnostics
+        peerConnection.onconnectionstatechange = () => {
+            console.log("[WebRTC Receiver] connectionState:", peerConnection.connectionState);
+            addNotification(`Connection State (Receiver): ${peerConnection.connectionState}`);
+        };
+        peerConnection.oniceconnectionstatechange = () => {
+            console.log("[WebRTC Receiver] iceConnectionState:", peerConnection.iceConnectionState);
+        };
         
         peerConnection.onicecandidate = (event) => {
             if (event.candidate && currentRoomCode) {
                 broadcastSyncEvent('webrtc_signal', {
-                    candidate: event.candidate,
+                    candidate: event.candidate.toJSON(), // Serialize candidate clean JSON
                     sender: currentUserName
                 });
             }
@@ -1412,13 +1554,12 @@ document.addEventListener('DOMContentLoaded', () => {
         peerConnection.ontrack = (event) => {
             console.log("Remote track received:", event.track.kind);
             
-            if (!remoteStream) {
-                remoteStream = new MediaStream();
+            const stream = event.streams[0];
+            if (!stream) {
+                console.warn("No stream associated with the remote track.");
+                return;
             }
-            
-            if (!remoteStream.getTracks().find(t => t.id === event.track.id)) {
-                remoteStream.addTrack(event.track);
-            }
+            remoteStream = stream;
             
             const theatreDropzoneWrapper = document.querySelector('.theatre-dropzone-wrapper');
             if (theatreDropzoneWrapper) theatreDropzoneWrapper.classList.add('hidden');
@@ -1430,42 +1571,27 @@ document.addEventListener('DOMContentLoaded', () => {
                 playerWrapper.classList.add('plyr-is-receiver');
             }
             
+            // Re-assign srcObject on track arrival to handle WebKit rendering quirks
             if (mainVideo.srcObject !== remoteStream) {
                 mainVideo.srcObject = remoteStream;
             } else if (event.track.kind === 'video') {
-                // Re-assign srcObject on video track arrival to force Safari to render frames
                 mainVideo.srcObject = null;
                 mainVideo.srcObject = remoteStream;
             }
             
             mainVideo.muted = false;
             
-            if (plyrPlayer) {
-                plyrPlayer.muted = false;
-                plyrPlayer.play().catch(err => {
-                    console.log("Plyr stream play blocked:", err);
-                    addNotification("Tap anywhere to enable audio and watch together!");
-                    const playOnGesture = () => {
-                        plyrPlayer.play();
-                        document.removeEventListener('click', playOnGesture);
-                        document.removeEventListener('touchstart', playOnGesture);
-                    };
-                    document.addEventListener('click', playOnGesture);
-                    document.addEventListener('touchstart', playOnGesture);
-                });
-            } else {
-                mainVideo.play().catch(err => {
-                    console.log("Stream play blocked:", err);
-                    addNotification("Tap anywhere to watch together!");
-                    const playOnGesture = () => {
-                        mainVideo.play();
-                        document.removeEventListener('click', playOnGesture);
-                        document.removeEventListener('touchstart', playOnGesture);
-                    };
-                    document.addEventListener('click', playOnGesture);
-                    document.addEventListener('touchstart', playOnGesture);
-                });
-            }
+            mainVideo.play().catch(err => {
+                console.log("Stream play blocked:", err);
+                addNotification("Tap anywhere to watch together!");
+                const playOnGesture = () => {
+                    mainVideo.play().catch(e => console.log(e));
+                    document.removeEventListener('click', playOnGesture);
+                    document.removeEventListener('touchstart', playOnGesture);
+                };
+                document.addEventListener('click', playOnGesture);
+                document.addEventListener('touchstart', playOnGesture);
+            });
         };
     }
 
@@ -1477,12 +1603,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 const desc = new RTCSessionDescription(signal.sdp);
                 
                 if (desc.type === 'offer') {
+                    // Create receiver peer connection on SDP offer arrival
                     createReceiverPeerConnection();
                     await peerConnection.setRemoteDescription(desc);
                     const answer = await peerConnection.createAnswer();
                     await peerConnection.setLocalDescription(answer);
                     broadcastSyncEvent('webrtc_signal', {
-                        sdp: answer,
+                        sdp: { type: answer.type, sdp: answer.sdp }, // Clean serialization
                         sender: currentUserName
                     });
                 } else if (desc.type === 'answer') {
@@ -1520,6 +1647,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Shared Video Sync (Sync play/pause/seeks and Takeover)
     function broadcastVideoAction(action, time) {
+        if (mainVideo && mainVideo.srcObject) {
+            return; // Receivers do not broadcast video actions!
+        }
         if (currentRoomCode) {
             broadcastSyncEvent('video_action', {
                 action: action,
@@ -1532,29 +1662,19 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function startVideoSync(code) {
         // Fullscreen class wiring
-        if (plyrPlayer) {
-            plyrPlayer.on('enterfullscreen', () => {
+        document.addEventListener('fullscreenchange', () => {
+            if (document.fullscreenElement) {
                 document.body.classList.add('plyr-fullscreen-active');
-            });
-            plyrPlayer.on('exitfullscreen', () => {
+            } else {
                 document.body.classList.remove('plyr-fullscreen-active');
-            });
-        } else if (mainVideo) {
-            document.addEventListener('fullscreenchange', () => {
-                if (document.fullscreenElement) {
-                    document.body.classList.add('plyr-fullscreen-active');
-                } else {
-                    document.body.classList.remove('plyr-fullscreen-active');
-                }
-            });
-        }
+            }
+        });
 
         window.addEventListener('together_video_load', (e) => {
             const videoData = e.detail;
             
             unloadVideo();
-            // Pre-initialize receiver connection to capture early ICE candidates
-            createReceiverPeerConnection();
+            // We wait for the SDP offer to arrive to create the peer connection
             
             addNotification(`${videoData.sender || 'Partner'} shared: "${videoData.fileName}". Connecting live stream...`);
         });
