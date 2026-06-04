@@ -7,10 +7,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Global Error Listeners for Visual Debugging
     window.addEventListener('error', (e) => {
-        addNotification(`Error: ${e.message} (${e.filename}:${e.lineno})`);
+        if (e.message) {
+            addNotification(`Error: ${e.message} (${e.filename}:${e.lineno})`);
+        }
     });
     window.addEventListener('unhandledrejection', (e) => {
-        addNotification(`Promise Rejection: ${e.reason}`);
+        if (e.reason) {
+            const msg = e.reason.message || e.reason;
+            addNotification(`Promise Rejection: ${msg}`);
+        }
     });
 
     let currentRoomCode = null;
@@ -1347,7 +1352,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             let animId = null;
             function renderFrame() {
-                if (video.videoWidth > 0 && video.videoHeight > 0) {
+                if (video.videoWidth > 0 && video.videoHeight > 0 && video.readyState >= 2) {
                     try {
                         const targetW = video.videoWidth;
                         const targetH = video.videoHeight;
@@ -1366,10 +1371,6 @@ document.addEventListener('DOMContentLoaded', () => {
                     } catch(e) {
                         console.warn("Canvas draw failed:", e);
                     }
-                } else {
-                    try {
-                        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-                    } catch(e) {}
                 }
                 animId = requestAnimationFrame(renderFrame);
             }
@@ -1445,21 +1446,34 @@ document.addEventListener('DOMContentLoaded', () => {
         peerConnection = new RTCPeerConnection({
             iceServers: [
                 { urls: 'stun:stun.l.google.com:19302' },
-                { urls: 'stun:stun1.l.google.com:19302' },
-                { urls: 'stun:stun2.l.google.com:19302' },
-                { urls: 'stun:stun3.l.google.com:19302' },
-                { urls: 'stun:stun4.l.google.com:19302' },
-                { urls: 'stun:stun.services.mozilla.com' }
+                { urls: 'stun:stun.services.mozilla.com' },
+                {
+                    urls: [
+                        'turn:openrelay.metered.ca:80',
+                        'turn:openrelay.metered.ca:443',
+                        'turn:openrelay.metered.ca:443?transport=tcp',
+                        'turns:openrelay.metered.ca:443?transport=tcp'
+                    ],
+                    username: 'openrelayproject',
+                    credential: 'openrelayproject'
+                }
             ]
         });
 
         // Set up connection diagnostics (Requirement 11)
         peerConnection.onconnectionstatechange = () => {
-            console.log("[WebRTC Sender] connectionStateChanged:", peerConnection.connectionState);
-            addNotification(`Connection State (Sender): ${peerConnection.connectionState}`);
+            const state = peerConnection.connectionState;
+            console.log("[WebRTC Sender] connectionStateChanged:", state);
+            if (state && state !== "undefined") {
+                addNotification(`Connection State (Sender): ${state}`);
+            }
         };
         peerConnection.oniceconnectionstatechange = () => {
-            console.log("[WebRTC Sender] iceConnectionStateChanged:", peerConnection.iceConnectionState);
+            const state = peerConnection.iceConnectionState;
+            console.log("[WebRTC Sender] iceConnectionStateChanged:", state);
+            if (!('connectionState' in RTCPeerConnection.prototype) && state) {
+                addNotification(`Connection State (Sender): ${state}`);
+            }
         };
         peerConnection.onsignalingstatechange = () => {
             console.log("[WebRTC Sender] signalingStateChanged:", peerConnection.signalingState);
@@ -1585,11 +1599,17 @@ document.addEventListener('DOMContentLoaded', () => {
         peerConnection = new RTCPeerConnection({
             iceServers: [
                 { urls: 'stun:stun.l.google.com:19302' },
-                { urls: 'stun:stun1.l.google.com:19302' },
-                { urls: 'stun:stun2.l.google.com:19302' },
-                { urls: 'stun:stun3.l.google.com:19302' },
-                { urls: 'stun:stun4.l.google.com:19302' },
-                { urls: 'stun:stun.services.mozilla.com' }
+                { urls: 'stun:stun.services.mozilla.com' },
+                {
+                    urls: [
+                        'turn:openrelay.metered.ca:80',
+                        'turn:openrelay.metered.ca:443',
+                        'turn:openrelay.metered.ca:443?transport=tcp',
+                        'turns:openrelay.metered.ca:443?transport=tcp'
+                    ],
+                    username: 'openrelayproject',
+                    credential: 'openrelayproject'
+                }
             ]
         });
 
@@ -1599,11 +1619,18 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // Set up connection diagnostics (Requirement 11)
         peerConnection.onconnectionstatechange = () => {
-            console.log("[WebRTC Receiver] connectionStateChanged:", peerConnection.connectionState);
-            addNotification(`Connection State (Receiver): ${peerConnection.connectionState}`);
+            const state = peerConnection.connectionState;
+            console.log("[WebRTC Receiver] connectionStateChanged:", state);
+            if (state && state !== "undefined") {
+                addNotification(`Connection State (Receiver): ${state}`);
+            }
         };
         peerConnection.oniceconnectionstatechange = () => {
-            console.log("[WebRTC Receiver] iceConnectionStateChanged:", peerConnection.iceConnectionState);
+            const state = peerConnection.iceConnectionState;
+            console.log("[WebRTC Receiver] iceConnectionStateChanged:", state);
+            if (!('connectionState' in RTCPeerConnection.prototype) && state) {
+                addNotification(`Connection State (Receiver): ${state}`);
+            }
         };
         peerConnection.onsignalingstatechange = () => {
             console.log("[WebRTC Receiver] signalingStateChanged:", peerConnection.signalingState);
