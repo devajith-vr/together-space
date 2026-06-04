@@ -1300,7 +1300,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (peerConnection) {
             try { peerConnection.close(); } catch(e) {}
         }
-        remoteCandidatesQueue = [];
+        // Keep remoteCandidatesQueue intact to preserve candidates that arrived early
         
         peerConnection = new RTCPeerConnection({
             iceServers: [
@@ -1376,37 +1376,44 @@ document.addEventListener('DOMContentLoaded', () => {
 
     async function handleWebRTCSignal(signal) {
         if (signal.sender === currentUserName) return;
-
-        if (!peerConnection) {
-            createReceiverPeerConnection();
-        }
         
         try {
             if (signal.sdp) {
                 const desc = new RTCSessionDescription(signal.sdp);
-                await peerConnection.setRemoteDescription(desc);
                 
                 if (desc.type === 'offer') {
+                    createReceiverPeerConnection();
+                    await peerConnection.setRemoteDescription(desc);
                     const answer = await peerConnection.createAnswer();
                     await peerConnection.setLocalDescription(answer);
                     broadcastSyncEvent('webrtc_signal', {
                         sdp: answer,
                         sender: currentUserName
                     });
+                } else if (desc.type === 'answer') {
+                    if (peerConnection) {
+                        await peerConnection.setRemoteDescription(desc);
+                    }
                 }
                 
-                while (remoteCandidatesQueue.length > 0) {
-                    const candidateData = remoteCandidatesQueue.shift();
-                    try {
-                        await peerConnection.addIceCandidate(candidateData);
-                    } catch (err) {
-                        console.error("Error adding queued remote candidate:", err);
+                if (peerConnection) {
+                    while (remoteCandidatesQueue.length > 0) {
+                        const candidateData = remoteCandidatesQueue.shift();
+                        try {
+                            await peerConnection.addIceCandidate(candidateData);
+                        } catch (err) {
+                            console.error("Error adding queued remote candidate:", err);
+                        }
                     }
                 }
             } else if (signal.candidate) {
                 const candidate = new RTCIceCandidate(signal.candidate);
-                if (peerConnection.remoteDescription && peerConnection.remoteDescription.type) {
-                    await peerConnection.addIceCandidate(candidate);
+                if (peerConnection && peerConnection.remoteDescription && peerConnection.remoteDescription.type) {
+                    try {
+                        await peerConnection.addIceCandidate(candidate);
+                    } catch(err) {
+                        console.error("Error adding candidate directly:", err);
+                    }
                 } else {
                     remoteCandidatesQueue.push(candidate);
                 }
@@ -1451,6 +1458,9 @@ document.addEventListener('DOMContentLoaded', () => {
             const videoData = e.detail;
             
             unloadVideo();
+            // Pre-initialize receiver connection to capture early ICE candidates
+            createReceiverPeerConnection();
+            
             addNotification(`${videoData.sender || 'Partner'} shared: "${videoData.fileName}". Connecting live stream...`);
         });
 
