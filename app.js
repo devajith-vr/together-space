@@ -1090,7 +1090,12 @@ document.addEventListener('DOMContentLoaded', () => {
             mainVideo.srcObject = null;
         }
         if (localStream) {
-            try { localStream.getTracks().forEach(t => t.stop()); } catch(e) {}
+            try {
+                localStream.getTracks().forEach(t => t.stop());
+                if (typeof localStream._cleanup === 'function') {
+                    localStream._cleanup();
+                }
+            } catch(e) {}
             localStream = null;
         }
         if (remoteStream) {
@@ -1168,11 +1173,19 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function unloadVideo() {
         if (plyrPlayer) {
-            plyrPlayer.pause();
-            plyrPlayer.source = {}; // Reset source
-        } else {
-            mainVideo.pause();
-            mainVideo.src = "";
+            try {
+                plyrPlayer.pause();
+                plyrPlayer.source = {}; // Reset source
+            } catch(e) {}
+        }
+        
+        if (mainVideo) {
+            try {
+                mainVideo.pause();
+                mainVideo.removeAttribute('src');
+                mainVideo.src = "";
+                mainVideo.load(); // Force reload to clear memory buffers
+            } catch(e) {}
         }
 
         if (mainVideo.srcObject) {
@@ -1184,6 +1197,9 @@ document.addEventListener('DOMContentLoaded', () => {
         if (localStream) {
             try {
                 localStream.getTracks().forEach(track => track.stop());
+                if (typeof localStream._cleanup === 'function') {
+                    localStream._cleanup();
+                }
             } catch(e) {}
             localStream = null;
         }
@@ -1212,9 +1228,6 @@ document.addEventListener('DOMContentLoaded', () => {
         
         const dropzonePromptText = document.getElementById('dropzonePromptText');
         if (dropzonePromptText) {
-            dropzonePromptText.textContent = "Drag and drop any video here or click to select from your device gallery.";
-        }
-        
         videoDropzone.classList.remove('hidden');
         videoFileInput.value = "";
     }
@@ -1222,11 +1235,75 @@ document.addEventListener('DOMContentLoaded', () => {
     // ==========================================
     // --- Serverless WebRTC Streaming via MQTT ---
     // ==========================================
+    function captureMediaStream(video) {
+        if (video.captureStream) {
+            return video.captureStream();
+        } else if (video.mozCaptureStream) {
+            return video.mozCaptureStream();
+        } else {
+            console.log("Using Canvas + Web Audio API capture fallback for iOS/macOS Safari...");
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+            
+            canvas.width = video.videoWidth || 640;
+            canvas.height = video.videoHeight || 360;
+            
+            let animId = null;
+            function draw() {
+                if (video.paused || video.ended) {
+                    animId = null;
+                    return;
+                }
+                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                animId = requestAnimationFrame(draw);
+            }
+            
+            video.addEventListener('play', () => {
+                canvas.width = video.videoWidth || 640;
+                canvas.height = video.videoHeight || 360;
+                if (!animId) draw();
+            });
+            
+            if (!video.paused && !animId) {
+                draw();
+            }
+            
+            const canvasStream = canvas.captureStream(24);
+            const videoTrack = canvasStream.getVideoTracks()[0];
+            const tracks = [];
+            if (videoTrack) tracks.push(videoTrack);
+            
+            try {
+                const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                const source = audioCtx.createMediaElementSource(video);
+                const dest = audioCtx.createMediaStreamDestination();
+                source.connect(dest);
+                source.connect(audioCtx.destination);
+                
+                const audioTrack = dest.stream.getAudioTracks()[0];
+                if (audioTrack) tracks.push(audioTrack);
+                
+                video._audioCtx = audioCtx;
+            } catch(e) {
+                console.warn("Web Audio capture failed:", e);
+            }
+            
+            const stream = new MediaStream(tracks);
+            stream._cleanup = () => {
+                if (animId) cancelAnimationFrame(animId);
+                if (video._audioCtx) {
+                    try { video._audioCtx.close(); } catch(err) {}
+                    video._audioCtx = null;
+                }
+            };
+            return stream;
+        }
+    }
+
     async function initiateWebRTCStream() {
         if (peerConnection) {
             try { peerConnection.close(); } catch(e) {}
         }
-        remoteCandidatesQueue = [];
         
         peerConnection = new RTCPeerConnection({
             iceServers: [
@@ -1244,12 +1321,14 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         };
 
-        if (mainVideo.captureStream) {
-            localStream = mainVideo.captureStream();
-        } else if (mainVideo.mozCaptureStream) {
-            localStream = mainVideo.mozCaptureStream();
-        } else {
-            console.warn("captureStream not supported in this browser");
+        // Resume AudioContext if we are in iOS Safari gesture callback
+        if (mainVideo._audioCtx && mainVideo._audioCtx.state === 'suspended') {
+            mainVideo._audioCtx.resume().catch(e => console.log(e));
+        }
+
+        localStream = captureMediaStream(mainVideo);
+        if (!localStream) {
+            console.warn("Failed to capture media stream.");
             return;
         }
 
@@ -1340,6 +1419,10 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             
             if (mainVideo.srcObject !== remoteStream) {
+                mainVideo.srcObject = remoteStream;
+            } else if (event.track.kind === 'video') {
+                // Re-assign srcObject on video track arrival to force Safari to render frames
+                mainVideo.srcObject = null;
                 mainVideo.srcObject = remoteStream;
             }
             
