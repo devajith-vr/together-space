@@ -1292,17 +1292,16 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         
         videoDropzone.classList.remove('hidden');
-        videoFileInput.value = "";
+            videoFileInput.value = "";
     }
 
     // ==========================================
     // --- Serverless WebRTC Streaming via MQTT ---
     // ==========================================
-    function captureMediaStream(video) {
+    async function captureMediaStream(video) {
         let stream = null;
         let useFallback = false;
 
-        // Detect iOS (iPhone/iPad) and WebKit (Safari) to force Canvas + Web Audio fallback
         const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || 
                       (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
         const isSafari = /Safari/.test(navigator.userAgent) && !/Chrome/.test(navigator.userAgent);
@@ -1311,7 +1310,7 @@ document.addEventListener('DOMContentLoaded', () => {
             try {
                 const captureFn = video.captureStream || video.mozCaptureStream;
                 stream = captureFn.call(video);
-                console.log("Native captureStream successful. Tracks:", stream.getTracks().map(t => t.kind));
+                console.log("Native captureStream successful.");
             } catch (e) {
                 console.warn("Native captureStream failed, using canvas fallback:", e);
                 useFallback = true;
@@ -1322,11 +1321,18 @@ document.addEventListener('DOMContentLoaded', () => {
 
         if (useFallback) {
             console.log("Using Canvas + Web Audio API capture fallback...");
+            
+            // Requirement 7: Wait until the video starts playing before capturing
+            try {
+                await video.play();
+            } catch(e) {
+                console.warn("Play promise failed before canvas capture:", e);
+            }
+
             const canvas = document.createElement('canvas');
             const ctx = canvas.getContext('2d');
             
-            // Cap resolution for smooth encoding on mobile devices
-            const maxDimension = 854; // Cap at 480p width equivalent
+            const maxDimension = 854;
             let width = video.videoWidth || 640;
             let height = video.videoHeight || 360;
             
@@ -1338,25 +1344,9 @@ document.addEventListener('DOMContentLoaded', () => {
             
             canvas.width = width;
             canvas.height = height;
-            
-            // Draw a black placeholder and immediate video frame to initialize the track
-            try {
-                ctx.fillStyle = "#000000";
-                ctx.fillRect(0, 0, canvas.width, canvas.height);
-                if (video.videoWidth > 0 && video.videoHeight > 0) {
-                    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-                }
-            } catch(e) {
-                console.log("Initial canvas draw skipped:", e);
-            }
-            
+
             let animId = null;
-            function draw() {
-                if (video.paused || video.ended) {
-                    animId = null;
-                    return;
-                }
-                
+            function renderFrame() {
                 if (video.videoWidth > 0 && video.videoHeight > 0) {
                     try {
                         const targetW = video.videoWidth;
@@ -1374,63 +1364,45 @@ document.addEventListener('DOMContentLoaded', () => {
                         }
                         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
                     } catch(e) {
-                        console.warn("Canvas drawImage failed inside loop:", e);
+                        console.warn("Canvas draw failed:", e);
                     }
-                }
-                animId = requestAnimationFrame(draw);
-            }
-            
-            video.addEventListener('play', () => {
-                const w = video.videoWidth || 640;
-                const h = video.videoHeight || 360;
-                if (w > maxDimension) {
-                    const ratio = maxDimension / w;
-                    canvas.width = maxDimension;
-                    canvas.height = Math.floor(h * ratio);
                 } else {
-                    canvas.width = w;
-                    canvas.height = h;
+                    try {
+                        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                    } catch(e) {}
                 }
-                if (!animId) draw();
-            });
-            
-            if (!video.paused && !animId) {
-                draw();
+                animId = requestAnimationFrame(renderFrame);
             }
-            
+
+            // Start rendering loop immediately (Requirement 7: draw continuously)
+            renderFrame();
+
             const canvasStream = canvas.captureStream(24);
             const videoTrack = canvasStream.getVideoTracks()[0];
             const tracks = [];
             if (videoTrack) tracks.push(videoTrack);
             
             try {
-                // Reuse global AudioContext and nodes to bypass InvalidStateError on multiple connections
+                // Lazy-initialize global AudioContext and associated nodes
                 if (!globalAudioCtx) {
                     globalAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
-                    globalAudioSource = globalAudioCtx.createMediaElementSource(video);
-                    globalAudioDest = globalAudioCtx.createMediaStreamDestination();
-                    globalAudioSource.connect(globalAudioDest);
-                    globalAudioSource.connect(globalAudioCtx.destination);
                 }
                 
-                const audioTrack = globalAudioDest.stream.getAudioTracks()[0];
-                if (audioTrack) tracks.push(audioTrack);
+                // Requirement 8: Ensure AudioContext is running before routing media element
+                await globalAudioCtx.resume();
+                console.log("Global AudioContext state:", globalAudioCtx.state);
                 
-                video._audioCtx = globalAudioCtx;
-
-                // Resume AudioContext if it is suspended (iOS restriction fallback)
-                if (globalAudioCtx.state === 'suspended') {
-                    const resumeCtx = () => {
-                        if (globalAudioCtx && globalAudioCtx.state === 'suspended') {
-                            globalAudioCtx.resume().then(() => {
-                                console.log("Global AudioContext resumed on user gesture.");
-                            }).catch(err => console.error("Gesture resume failed:", err));
-                        }
-                        document.removeEventListener('click', resumeCtx);
-                        document.removeEventListener('touchstart', resumeCtx);
-                    };
-                    document.addEventListener('click', resumeCtx);
-                    document.addEventListener('touchstart', resumeCtx);
+                if (globalAudioCtx.state === "running") {
+                    if (!globalAudioSource) {
+                        globalAudioSource = globalAudioCtx.createMediaElementSource(video);
+                        globalAudioDest = globalAudioCtx.createMediaStreamDestination();
+                        globalAudioSource.connect(globalAudioDest);
+                        globalAudioSource.connect(globalAudioCtx.destination);
+                    }
+                    const audioTrack = globalAudioDest.stream.getAudioTracks()[0];
+                    if (audioTrack) tracks.push(audioTrack);
+                } else {
+                    console.warn("AudioContext state is not running. Audio track was not captured.");
                 }
             } catch(e) {
                 console.warn("Web Audio capture failed/reused:", e);
@@ -1439,15 +1411,23 @@ document.addEventListener('DOMContentLoaded', () => {
             stream = new MediaStream(tracks);
             stream._cleanup = () => {
                 if (animId) cancelAnimationFrame(animId);
-                // Do not close globalAudioCtx to allow reuse for subsequent videos
             };
         }
+
+        // Requirement 9: Verify Tracks Are Live immediately after creating the stream
+        if (stream) {
+            stream.getTracks().forEach(track => {
+                console.log(track.kind, track.readyState, track.enabled);
+            });
+        }
+        
         return stream;
     }
 
     async function initiateWebRTCStream() {
         if (peerConnection) {
             try { peerConnection.close(); } catch(e) {}
+            peerConnection = null;
         }
         if (localStream) {
             try {
@@ -1460,6 +1440,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         remoteCandidatesQueue = []; // Clear queue on start of new connection
+        remoteStream = null;
         
         peerConnection = new RTCPeerConnection({
             iceServers: [
@@ -1472,13 +1453,16 @@ document.addEventListener('DOMContentLoaded', () => {
             ]
         });
 
-        // Set up connection diagnostics
+        // Set up connection diagnostics (Requirement 11)
         peerConnection.onconnectionstatechange = () => {
-            console.log("[WebRTC Sender] connectionState:", peerConnection.connectionState);
+            console.log("[WebRTC Sender] connectionStateChanged:", peerConnection.connectionState);
             addNotification(`Connection State (Sender): ${peerConnection.connectionState}`);
         };
         peerConnection.oniceconnectionstatechange = () => {
-            console.log("[WebRTC Sender] iceConnectionState:", peerConnection.iceConnectionState);
+            console.log("[WebRTC Sender] iceConnectionStateChanged:", peerConnection.iceConnectionState);
+        };
+        peerConnection.onsignalingstatechange = () => {
+            console.log("[WebRTC Sender] signalingStateChanged:", peerConnection.signalingState);
         };
         
         peerConnection.onicecandidate = (event) => {
@@ -1491,12 +1475,27 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         };
 
-        // Resume AudioContext if we are in iOS Safari gesture callback
+        // Start stats logging interval for sender (Requirement 11: verify packets are transmitted)
+        const statsInterval = setInterval(() => {
+            if (!peerConnection || peerConnection.connectionState === 'closed') {
+                clearInterval(statsInterval);
+                return;
+            }
+            peerConnection.getStats().then(stats => {
+                stats.forEach(report => {
+                    if (report.type === 'outbound-rtp' && (report.kind === 'video' || report.kind === 'audio')) {
+                        console.log(`[RTP Stats - Sender] ${report.kind} bytesSent: ${report.bytesSent} packetsSent: ${report.packetsSent}`);
+                    }
+                });
+            }).catch(err => console.warn(err));
+        }, 5000);
+
+        // Resume AudioContext if it is suspended
         if (globalAudioCtx && globalAudioCtx.state === 'suspended') {
             globalAudioCtx.resume().catch(e => console.log(e));
         }
 
-        localStream = captureMediaStream(mainVideo);
+        localStream = await captureMediaStream(mainVideo);
         if (!localStream) {
             console.warn("Failed to capture media stream.");
             return;
@@ -1521,7 +1520,31 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }
 
+        // Add tracks using transceiver setup for video and addTrack for audio (Requirement 2, 10)
         let tracks = localStream.getTracks();
+        const addLocalTracksToPeer = () => {
+            tracks.forEach(track => {
+                if (track.kind === 'video') {
+                    // Requirement 10: Force H264 Codec compatibility on the video transceiver
+                    const videoTransceiver = peerConnection.addTransceiver(track, {
+                        direction: "sendonly"
+                    });
+                    try {
+                        const codecs = RTCRtpSender.getCapabilities("video").codecs;
+                        videoTransceiver.setCodecPreferences(
+                            codecs.filter(codec => codec.mimeType === "video/H264")
+                        );
+                        console.log("[WebRTC Sender] Forced H264 codec preferences:", codecs.filter(codec => codec.mimeType === "video/H264"));
+                    } catch(err) {
+                        console.warn("Could not set H264 preference:", err);
+                    }
+                } else {
+                    peerConnection.addTrack(track, localStream);
+                }
+            });
+            sendSDPOffer();
+        };
+
         if (tracks.length === 0) {
             console.warn("localStream has 0 tracks initially. Waiting for tracks to initialize...");
             let attempts = 0;
@@ -1530,10 +1553,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 tracks = localStream.getTracks();
                 if (tracks.length > 0) {
                     clearInterval(checkInterval);
-                    tracks.forEach(track => {
-                        peerConnection.addTrack(track, localStream);
-                    });
-                    sendSDPOffer();
+                    addLocalTracksToPeer();
                 } else if (attempts >= 15) {
                     clearInterval(checkInterval);
                     console.error("Failed to capture any tracks from video after 3 seconds.");
@@ -1541,21 +1561,26 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             }, 200);
         } else {
-            tracks.forEach(track => {
-                peerConnection.addTrack(track, localStream);
-            });
-            sendSDPOffer();
+            addLocalTracksToPeer();
         }
     }
 
     function createReceiverPeerConnection() {
         if (peerConnection) {
             try { peerConnection.close(); } catch(e) {}
+            peerConnection = null;
         }
-        remoteCandidatesQueue = []; // Clear queue on start of new connection
+        remoteStream = null;
         
         // Destroy Plyr so native HTML5 <video> player renders srcObject WebRTC stream properly
         destroyPlyr();
+
+        // Requirement 6: Programmatically configure receiver video properties
+        if (mainVideo) {
+            mainVideo.autoplay = true;
+            mainVideo.playsInline = true;
+            mainVideo.controls = true;
+        }
 
         peerConnection = new RTCPeerConnection({
             iceServers: [
@@ -1568,13 +1593,20 @@ document.addEventListener('DOMContentLoaded', () => {
             ]
         });
 
-        // Set up connection diagnostics
+        // Requirement 3: Add recvonly transceivers before remote description is set
+        peerConnection.addTransceiver("video", { direction: "recvonly" });
+        peerConnection.addTransceiver("audio", { direction: "recvonly" });
+
+        // Set up connection diagnostics (Requirement 11)
         peerConnection.onconnectionstatechange = () => {
-            console.log("[WebRTC Receiver] connectionState:", peerConnection.connectionState);
+            console.log("[WebRTC Receiver] connectionStateChanged:", peerConnection.connectionState);
             addNotification(`Connection State (Receiver): ${peerConnection.connectionState}`);
         };
         peerConnection.oniceconnectionstatechange = () => {
-            console.log("[WebRTC Receiver] iceConnectionState:", peerConnection.iceConnectionState);
+            console.log("[WebRTC Receiver] iceConnectionStateChanged:", peerConnection.iceConnectionState);
+        };
+        peerConnection.onsignalingstatechange = () => {
+            console.log("[WebRTC Receiver] signalingStateChanged:", peerConnection.signalingState);
         };
         
         peerConnection.onicecandidate = (event) => {
@@ -1586,17 +1618,31 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
             }
         };
-        
-        peerConnection.ontrack = (event) => {
-            console.log("Remote track received:", event.track.kind);
-            
-            const stream = event.streams[0];
-            if (!stream) {
-                console.warn("No stream associated with the remote track.");
+
+        // Start getStats logging interval for connection monitoring (Requirement 11)
+        const statsInterval = setInterval(() => {
+            if (!peerConnection || peerConnection.connectionState === 'closed') {
+                clearInterval(statsInterval);
                 return;
             }
-            remoteStream = stream;
+            peerConnection.getStats().then(stats => {
+                stats.forEach(report => {
+                    if (report.type === 'inbound-rtp' && (report.kind === 'video' || report.kind === 'audio')) {
+                        console.log(`[RTP Stats - Receiver] ${report.kind} bytesReceived: ${report.bytesReceived} packetsReceived: ${report.packetsReceived}`);
+                    }
+                });
+            }).catch(err => console.warn(err));
+        }, 5000);
+
+        // Requirement 5: Build remote MediaStream manually
+        remoteStream = new MediaStream();
+        
+        peerConnection.ontrack = (event) => {
+            console.log(`[WebRTC Track Received] kind: ${event.track.kind} readyState: ${event.track.readyState} muted: ${event.track.muted} enabled: ${event.track.enabled}`);
             
+            // Append the new track to the manually managed stream
+            remoteStream.addTrack(event.track);
+
             const theatreDropzoneWrapper = document.querySelector('.theatre-dropzone-wrapper');
             if (theatreDropzoneWrapper) theatreDropzoneWrapper.classList.add('hidden');
             
@@ -1607,27 +1653,27 @@ document.addEventListener('DOMContentLoaded', () => {
                 playerWrapper.classList.add('plyr-is-receiver');
             }
             
-            // Re-assign srcObject on track arrival to handle WebKit rendering quirks
             if (mainVideo.srcObject !== remoteStream) {
-                mainVideo.srcObject = remoteStream;
-            } else if (event.track.kind === 'video') {
-                mainVideo.srcObject = null;
                 mainVideo.srcObject = remoteStream;
             }
             
             mainVideo.muted = false;
             
             mainVideo.play().catch(err => {
-                console.log("Stream play blocked:", err);
+                console.error("[Playback Blocked] Error attempting auto-playback:", err);
                 addNotification("Tap anywhere to watch together!");
                 const playOnGesture = () => {
-                    mainVideo.play().catch(e => console.log(e));
+                    mainVideo.play().catch(e => console.error("Gesture playback failed:", e));
                     document.removeEventListener('click', playOnGesture);
                     document.removeEventListener('touchstart', playOnGesture);
                 };
                 document.addEventListener('click', playOnGesture);
                 document.addEventListener('touchstart', playOnGesture);
             });
+
+            event.track.onmute = () => console.log(`[Track Mute] Remote track muted: ${event.track.kind} readyState: ${event.track.readyState} enabled: ${event.track.enabled}`);
+            event.track.onunmute = () => console.log(`[Track Unmute] Remote track unmuted: ${event.track.kind} readyState: ${event.track.readyState} enabled: ${event.track.enabled}`);
+            event.track.onended = () => console.log(`[Track Ended] Remote track ended: ${event.track.kind} readyState: ${event.track.readyState} enabled: ${event.track.enabled}`);
         };
     }
 
@@ -1642,6 +1688,18 @@ document.addEventListener('DOMContentLoaded', () => {
                     // Create receiver peer connection on SDP offer arrival
                     createReceiverPeerConnection();
                     await peerConnection.setRemoteDescription(desc);
+                    
+                    // Queue processing (Requirement 4)
+                    for (const candidateData of remoteCandidatesQueue) {
+                        try {
+                            await peerConnection.addIceCandidate(candidateData);
+                            console.log("[WebRTC Receiver] Added queued remote candidate:", candidateData);
+                        } catch (err) {
+                            console.error("[WebRTC Receiver] Error adding queued remote candidate:", err);
+                        }
+                    }
+                    remoteCandidatesQueue.length = 0;
+
                     const answer = await peerConnection.createAnswer();
                     await peerConnection.setLocalDescription(answer);
                     broadcastSyncEvent('webrtc_signal', {
@@ -1652,17 +1710,17 @@ document.addEventListener('DOMContentLoaded', () => {
                 } else if (desc.type === 'answer') {
                     if (peerConnection) {
                         await peerConnection.setRemoteDescription(desc);
-                    }
-                }
-                
-                if (peerConnection) {
-                    while (remoteCandidatesQueue.length > 0) {
-                        const candidateData = remoteCandidatesQueue.shift();
-                        try {
-                            await peerConnection.addIceCandidate(candidateData);
-                        } catch (err) {
-                            console.error("Error adding queued remote candidate:", err);
+                        
+                        // Queue processing (Requirement 4)
+                        for (const candidateData of remoteCandidatesQueue) {
+                            try {
+                                await peerConnection.addIceCandidate(candidateData);
+                                console.log("[WebRTC Sender] Added queued remote candidate:", candidateData);
+                            } catch (err) {
+                                console.error("[WebRTC Sender] Error adding queued remote candidate:", err);
+                            }
                         }
+                        remoteCandidatesQueue.length = 0;
                     }
                 }
             } else if (signal.candidate) {
@@ -1670,11 +1728,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (peerConnection && peerConnection.remoteDescription && peerConnection.remoteDescription.type) {
                     try {
                         await peerConnection.addIceCandidate(candidate);
+                        console.log("[WebRTC] Added remote candidate directly:", candidate);
                     } catch(err) {
-                        console.error("Error adding candidate directly:", err);
+                        console.error("[WebRTC] Error adding candidate directly:", err);
                     }
                 } else {
                     remoteCandidatesQueue.push(candidate);
+                    console.log("[WebRTC] Queued remote candidate:", candidate);
                 }
             }
         } catch (e) {
