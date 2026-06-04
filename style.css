@@ -246,6 +246,13 @@ input:focus, select:focus { border-color: var(--primary); background: rgba(216, 
     background: linear-gradient(rgba(0, 0, 0, 0), rgba(0, 0, 0, 0.8)) !important;
 }
 
+/* Receiver-specific Plyr UI overrides (disable timeline/seek) */
+.plyr-is-receiver .plyr__progress,
+.plyr-is-receiver .plyr__time,
+.plyr-is-receiver .plyr__menu {
+    display: none !important;
+}
+
 /* Right Column: Chat Hub scrollbar & container alignment */
 .music-hub { display: flex; flex-direction: column; gap: 25px; overflow-y: hidden; height: 100%; padding-right: 0px; }
 .card-brand-header { display: flex; align-items: center; gap: 10px; border-bottom: 1px solid var(--glass-border); padding-bottom: 8px; margin-bottom: 10px; }
