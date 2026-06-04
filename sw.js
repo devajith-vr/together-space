@@ -1,4 +1,4 @@
-const CACHE_NAME = 'together-v2';
+const CACHE_NAME = 'together-v3';
 const urlsToCache = [
   './index.html',
   './style.css',
