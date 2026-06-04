@@ -260,9 +260,21 @@
     <script src="https://cdn.plyr.io/3.7.8/plyr.js"></script>
     <script src="app.js"></script>
     <script>
+        // Unregister service worker and clear caches to prevent deployment caching issues
         if ('serviceWorker' in navigator) {
-            window.addEventListener('load', () => {
-                navigator.serviceWorker.register('./sw.js').catch(err => console.log('SW registration skipped or failed:', err));
+            navigator.serviceWorker.getRegistrations().then(registrations => {
+                for (let registration of registrations) {
+                    registration.unregister().then(() => {
+                        console.log("Old Service Worker cleared.");
+                    });
+                }
+            });
+        }
+        if ('caches' in window) {
+            caches.keys().then(names => {
+                for (let name of names) {
+                    caches.delete(name);
+                }
             });
         }
     </script>
