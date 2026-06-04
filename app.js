@@ -1228,6 +1228,9 @@ document.addEventListener('DOMContentLoaded', () => {
         
         const dropzonePromptText = document.getElementById('dropzonePromptText');
         if (dropzonePromptText) {
+            dropzonePromptText.textContent = "Drag and drop any video here or click to select from your device gallery.";
+        }
+        
         videoDropzone.classList.remove('hidden');
         videoFileInput.value = "";
     }
